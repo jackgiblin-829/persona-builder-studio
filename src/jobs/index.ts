@@ -1,0 +1,14 @@
+/**
+ * Job handler registration. Importing this module registers every handler with
+ * the registry; the worker imports it once at startup.
+ */
+import "./handlers/ingest-source";
+import "./handlers/extract-evidence";
+import "./handlers/embed-evidence";
+import "./handlers/generate-segments";
+import "./handlers/generate-persona";
+import "./handlers/generate-prompts";
+import "./handlers/embed-prompts";
+
+export { JOB_TYPES, registeredJobTypes, getJobHandler } from "./registry";
+export type { JobHandler, JobContext, JobResult, JobType } from "./registry";

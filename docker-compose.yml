@@ -1,0 +1,36 @@
+# Optional parity stack. Local development does NOT require Docker — see
+# docs/decisions.md ADR-002. If you use this, point DATABASE_URL at port 5433.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: pes
+      POSTGRES_PASSWORD: pes
+      POSTGRES_DB: persona_evidence_studio
+    ports: ["5433:5432"]
+    volumes: ["pes-pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pes -d persona_evidence_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6380:6379"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["pes-redisdata:/data"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: pesminio
+      MINIO_ROOT_PASSWORD: pesminio123
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["pes-miniodata:/data"]
+
+volumes:
+  pes-pgdata:
+  pes-redisdata:
+  pes-miniodata:

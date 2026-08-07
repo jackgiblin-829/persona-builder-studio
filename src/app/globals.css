@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface-sunken text-ink antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-surface;
+  }
+
+  /* Respect users who ask for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-surface-border bg-surface shadow-[0_1px_2px_rgba(15,23,32,0.04)];
+  }
+
+  .label {
+    @apply block text-sm font-medium text-ink;
+  }
+
+  .hint {
+    @apply mt-1 text-xs text-ink-muted;
+  }
+
+  .input {
+    @apply block w-full rounded-md border border-surface-border bg-surface px-3 py-2 text-sm
+      text-ink placeholder:text-ink-subtle focus:border-accent focus:outline-none
+      focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:bg-surface-sunken;
+  }
+
+  .table-wrap {
+    @apply w-full overflow-x-auto;
+  }
+
+  .table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .table th {
+    @apply whitespace-nowrap border-b border-surface-border px-3 py-2 text-left text-xs
+      font-semibold uppercase tracking-wide text-ink-muted;
+  }
+
+  .table td {
+    @apply border-b border-surface-border px-3 py-2 align-top text-ink;
+  }
+
+  .prose-brief h3 {
+    @apply mt-5 text-sm font-semibold uppercase tracking-wide text-ink-muted;
+  }
+
+  .prose-brief ul {
+    @apply mt-2 list-disc space-y-1 pl-5 text-sm;
+  }
+}
