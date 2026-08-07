@@ -16,7 +16,7 @@ import { CANDIDATE_SEGMENTATION, renderTemplate } from "@/prompts/registry";
 import { segmentationSchema, SCHEMA_VERSION } from "@/prompts/schemas";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
 import { recomputeSegmentConfidence } from "@/services/segments";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 import { loadBrandContext } from "./ingest-source";
 
@@ -110,79 +110,80 @@ registerJob(JOB_TYPES.generateSegments, async ({ job }) => {
 
   const { adapter, mode } = await getOpenAIAdapter(brand.organizationId);
   const jsonSchema = toStrictJsonSchema(segmentationSchema, "Segmentation");
-  const started = Date.now();
 
-  const result = await adapter.generateStructured({
-    templateId: CANDIDATE_SEGMENTATION.id,
-    templateVersion: CANDIDATE_SEGMENTATION.version,
-    schemaVersion: SCHEMA_VERSION,
-    system: CANDIDATE_SEGMENTATION.system,
-    user: renderTemplate(CANDIDATE_SEGMENTATION, {
-      brand_context: [
-        `Brand: ${brand.name} (${brand.canonicalDomain})`,
-        `Description: ${brand.description}`,
-        products.length > 0
-          ? `Products: ${products.map((p) => `${p.name} — ${p.description ?? ""}`.trim()).join("; ")}`
-          : "",
-        competitorRows.length > 0
-          ? `Competitors: ${competitorRows.map((c) => c.name).join(", ")}`
-          : "",
-        brand.strategicQuestions.length > 0
-          ? `Strategic questions: ${brand.strategicQuestions.join(" | ")}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      evidence_summary: summariseEvidence(evidence),
-      evidence_records: evidence
-        .map(
-          (record) =>
-            `[${record.id}] (${record.category}/${record.provenance}/${record.journeyStage}, source: ${record.sourceLabel}) ${record.claim}`,
-        )
-        .join("\n"),
-      // SparkToro and DataForSEO are not part of this milestone; the template
-      // renders "(none supplied)" rather than pretending signals exist.
-      sparktoro_signals: "",
-      dataforseo_signals: "",
-    }),
-    schema: segmentationSchema,
-    schemaName: "Segmentation",
-    jsonSchema,
-    modelTier: CANDIDATE_SEGMENTATION.modelTier,
-    mockContext: {
-      brandName: brand.name,
-      referenceDate: evidenceCutoff.toISOString(),
-      evidence: evidence.map((record) => ({
-        id: record.id,
-        claim: record.claim,
-        quote: record.quote,
-        category: record.category,
-        provenance: record.provenance,
-        sourceId: record.sourceId,
-        sourceType: record.sourceType,
-        journeyStage: record.journeyStage,
-        qualityScore: record.qualityScore,
-        vocabulary: record.vocabulary,
-        hedged: record.uncertaintyNote !== null,
-        observedAt: (record.observedAt ?? record.ingestedAt).toISOString(),
-      })),
+  const result = await withVendorUsage(
+    {
+      organizationId: brand.organizationId,
+      brandId,
+      vendor: "openai",
+      operation: "candidate_segmentation",
+      mode,
+      jobId: job.id,
     },
-  });
-
-  await recordVendorUsage({
-    organizationId: brand.organizationId,
-    brandId,
-    vendor: "openai",
-    operation: "candidate_segmentation",
-    mode,
-    jobId: job.id,
-    durationMs: Date.now() - started,
-    retryCount: result.attempts - 1,
-    outcome: "success",
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
-    costCents: result.costCents,
-  });
+    () =>
+      adapter.generateStructured({
+        templateId: CANDIDATE_SEGMENTATION.id,
+        templateVersion: CANDIDATE_SEGMENTATION.version,
+        schemaVersion: SCHEMA_VERSION,
+        system: CANDIDATE_SEGMENTATION.system,
+        user: renderTemplate(CANDIDATE_SEGMENTATION, {
+          brand_context: [
+            `Brand: ${brand.name} (${brand.canonicalDomain})`,
+            `Description: ${brand.description}`,
+            products.length > 0
+              ? `Products: ${products.map((p) => `${p.name} — ${p.description ?? ""}`.trim()).join("; ")}`
+              : "",
+            competitorRows.length > 0
+              ? `Competitors: ${competitorRows.map((c) => c.name).join(", ")}`
+              : "",
+            brand.strategicQuestions.length > 0
+              ? `Strategic questions: ${brand.strategicQuestions.join(" | ")}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          evidence_summary: summariseEvidence(evidence),
+          evidence_records: evidence
+            .map(
+              (record) =>
+                `[${record.id}] (${record.category}/${record.provenance}/${record.journeyStage}, source: ${record.sourceLabel}) ${record.claim}`,
+            )
+            .join("\n"),
+          // SparkToro and DataForSEO are not part of this milestone; the template
+          // renders "(none supplied)" rather than pretending signals exist.
+          sparktoro_signals: "",
+          dataforseo_signals: "",
+        }),
+        schema: segmentationSchema,
+        schemaName: "Segmentation",
+        jsonSchema,
+        modelTier: CANDIDATE_SEGMENTATION.modelTier,
+        mockContext: {
+          brandName: brand.name,
+          referenceDate: evidenceCutoff.toISOString(),
+          evidence: evidence.map((record) => ({
+            id: record.id,
+            claim: record.claim,
+            quote: record.quote,
+            category: record.category,
+            provenance: record.provenance,
+            sourceId: record.sourceId,
+            sourceType: record.sourceType,
+            journeyStage: record.journeyStage,
+            qualityScore: record.qualityScore,
+            vocabulary: record.vocabulary,
+            hedged: record.uncertaintyNote !== null,
+            observedAt: (record.observedAt ?? record.ingestedAt).toISOString(),
+          })),
+        },
+      }),
+    (segmentResult) => ({
+      retryCount: segmentResult.attempts - 1,
+      tokensIn: segmentResult.tokensIn,
+      tokensOut: segmentResult.tokensOut,
+      costCents: segmentResult.costCents,
+    }),
+  );
 
   const usedSlugs = new Set<string>();
   const assigned = new Set<string>();

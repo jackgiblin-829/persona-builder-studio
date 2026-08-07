@@ -8,8 +8,11 @@ import {
   type OpenAIAdapter,
   type StructuredRequest,
   type StructuredResult,
+  type WebResearchRequest,
+  type WebResearchResult,
 } from "./types";
 import { mockEmbed } from "./embedding";
+import { generateWebResearch } from "@fixtures/openai/web-research";
 
 /**
  * Deterministic mock OpenAI adapter.
@@ -93,6 +96,20 @@ export class MockOpenAIAdapter implements OpenAIAdapter {
       dimensions: EMBEDDING_DIMENSIONS,
       dataOrigin: "mock",
       tokensIn: request.texts.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0),
+      costCents: 0,
+    };
+  }
+
+  async webSearch(request: WebResearchRequest): Promise<WebResearchResult> {
+    const { findings, citations } = generateWebResearch(request.query);
+    return {
+      findings,
+      citations,
+      modelProvider: "mock",
+      modelId: `mock:${this.models.reasoning}`,
+      dataOrigin: "mock",
+      tokensIn: Math.ceil((request.query.length + request.brandContext.length) / 4),
+      tokensOut: Math.ceil(findings.length / 4),
       costCents: 0,
     };
   }

@@ -17,7 +17,7 @@ import { classifyPiiStatus, redact } from "@/lib/redaction";
 import { EVIDENCE_EXTRACTION, renderTemplate } from "@/prompts/registry";
 import { evidenceExtractionSchema, SCHEMA_VERSION } from "@/prompts/schemas";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 import { loadBrandContext, markStage } from "./ingest-source";
 
@@ -85,117 +85,106 @@ registerJob(JOB_TYPES.extractEvidence, async ({ job }) => {
     const chunks = chunkText(document.redactedText);
 
     for (const chunk of chunks) {
-      const started = Date.now();
-      try {
-        const result = await adapter.generateStructured({
-          templateId: EVIDENCE_EXTRACTION.id,
-          templateVersion: EVIDENCE_EXTRACTION.version,
-          schemaVersion: SCHEMA_VERSION,
-          system: EVIDENCE_EXTRACTION.system,
-          user: renderTemplate(EVIDENCE_EXTRACTION, {
-            brand_context: brandContext,
-            source_metadata: [
-              `Source label: ${source.label}`,
-              `Source type: ${source.sourceType}`,
-              `Source system: ${source.sourceSystem}`,
-              `Location: ${document.location}`,
-              document.speaker ? `Speaker: ${document.speaker}` : "",
-              document.observedAt ? `Observed at: ${document.observedAt.toISOString()}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-            source_passage: chunk.text,
-          }),
-          schema: evidenceExtractionSchema,
-          schemaName: "EvidenceExtraction",
-          jsonSchema,
-          modelTier: EVIDENCE_EXTRACTION.modelTier,
-          mockContext: {
-            passage: chunk.text,
-            speaker: chunk.speaker ?? document.speaker,
-            sourceType: source.sourceType,
-            brandName: brand.name,
-            competitorNames,
-            observedAt: document.observedAt?.toISOString() ?? null,
-          },
-        });
-
-        await recordVendorUsage({
+      // One bad chunk must not discard the rest of the source (§ error handling).
+      const result = await withVendorUsage(
+        {
           organizationId: source.organizationId,
           brandId: source.brandId,
           vendor: "openai",
           operation: "evidence_extraction",
           mode,
           jobId: job.id,
-          durationMs: Date.now() - started,
-          retryCount: result.attempts - 1,
-          outcome: "success",
-          tokensIn: result.tokensIn,
-          tokensOut: result.tokensOut,
-          costCents: result.costCents,
-        });
-
-        for (const item of result.data.records) {
-          // Belt and braces: the model sees redacted text, but anything it
-          // echoes back is redacted again before storage.
-          const quoteRedaction = redact(item.quote);
-          const claimRedaction = redact(item.normalized_claim);
-
-          await db.insert(evidenceRecords).values({
-            id: newId(ID_PREFIXES.evidence),
-            organizationId: source.organizationId,
-            brandId: source.brandId,
-            dataSourceId,
-            sourceDocumentId: document.id,
-            sourceType: source.sourceType,
-            sourceSystem: source.sourceSystem,
-            sourceLocation: document.location,
-            charStart: chunk.charStart + item.char_start,
-            charEnd: chunk.charStart + item.char_end,
-            timestampLabel: (document.metadata as { timestamp?: string })?.timestamp ?? null,
-            observedAt: document.observedAt ?? source.observedAt,
-            speaker: item.speaker ?? document.speaker,
-            rawText: quoteRedaction.text,
-            redactedText: quoteRedaction.text,
-            normalizedClaim: claimRedaction.text,
-            category: item.category,
-            provenance: item.provenance,
-            journeyStage: item.journey_stage,
-            sentiment: item.sentiment,
-            entities: item.entities,
-            vocabulary: item.vocabulary,
-            candidateSegmentLabels: [],
-            piiStatus: classifyPiiStatus(item.quote, quoteRedaction),
-            extractionConfidence: item.extraction_confidence,
-            qualityScore: item.quality_score,
-            uncertaintyNote: item.uncertainty_note,
-            createdByModel: result.modelId,
-            modelProvider: result.modelProvider,
-            promptTemplateVersion: EVIDENCE_EXTRACTION.version,
+        },
+        () =>
+          adapter.generateStructured({
+            templateId: EVIDENCE_EXTRACTION.id,
+            templateVersion: EVIDENCE_EXTRACTION.version,
             schemaVersion: SCHEMA_VERSION,
-            dataOrigin: result.dataOrigin,
-            reviewStatus: "pending_review",
-          });
-          created++;
-        }
-      } catch (error) {
-        // One bad chunk must not discard the rest of the source (§ error handling).
-        failedChunks++;
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${document.location} chunk ${chunk.index}: ${message}`);
+            system: EVIDENCE_EXTRACTION.system,
+            user: renderTemplate(EVIDENCE_EXTRACTION, {
+              brand_context: brandContext,
+              source_metadata: [
+                `Source label: ${source.label}`,
+                `Source type: ${source.sourceType}`,
+                `Source system: ${source.sourceSystem}`,
+                `Location: ${document.location}`,
+                document.speaker ? `Speaker: ${document.speaker}` : "",
+                document.observedAt ? `Observed at: ${document.observedAt.toISOString()}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+              source_passage: chunk.text,
+            }),
+            schema: evidenceExtractionSchema,
+            schemaName: "EvidenceExtraction",
+            jsonSchema,
+            modelTier: EVIDENCE_EXTRACTION.modelTier,
+            mockContext: {
+              passage: chunk.text,
+              speaker: chunk.speaker ?? document.speaker,
+              sourceType: source.sourceType,
+              brandName: brand.name,
+              competitorNames,
+              observedAt: document.observedAt?.toISOString() ?? null,
+            },
+          }),
+        (extractionResult) => ({
+          retryCount: extractionResult.attempts - 1,
+          tokensIn: extractionResult.tokensIn,
+          tokensOut: extractionResult.tokensOut,
+          costCents: extractionResult.costCents,
+        }),
+        { swallow: true },
+      );
 
-        await recordVendorUsage({
+      if (!result) {
+        failedChunks++;
+        errors.push(`${document.location} chunk ${chunk.index}: extraction failed`);
+        continue;
+      }
+
+      for (const item of result.data.records) {
+        // Belt and braces: the model sees redacted text, but anything it
+        // echoes back is redacted again before storage.
+        const quoteRedaction = redact(item.quote);
+        const claimRedaction = redact(item.normalized_claim);
+
+        await db.insert(evidenceRecords).values({
+          id: newId(ID_PREFIXES.evidence),
           organizationId: source.organizationId,
           brandId: source.brandId,
-          vendor: "openai",
-          operation: "evidence_extraction",
-          mode,
-          jobId: job.id,
-          durationMs: Date.now() - started,
-          retryCount: 0,
-          outcome: "failure",
-          errorCode: error instanceof Error ? error.name : "unknown",
+          dataSourceId,
+          sourceDocumentId: document.id,
+          sourceType: source.sourceType,
+          sourceSystem: source.sourceSystem,
+          sourceLocation: document.location,
+          charStart: chunk.charStart + item.char_start,
+          charEnd: chunk.charStart + item.char_end,
+          timestampLabel: (document.metadata as { timestamp?: string })?.timestamp ?? null,
+          observedAt: document.observedAt ?? source.observedAt,
+          speaker: item.speaker ?? document.speaker,
+          rawText: quoteRedaction.text,
+          redactedText: quoteRedaction.text,
+          normalizedClaim: claimRedaction.text,
+          category: item.category,
+          provenance: item.provenance,
+          journeyStage: item.journey_stage,
+          sentiment: item.sentiment,
+          entities: item.entities,
+          vocabulary: item.vocabulary,
+          candidateSegmentLabels: [],
+          piiStatus: classifyPiiStatus(item.quote, quoteRedaction),
+          extractionConfidence: item.extraction_confidence,
+          qualityScore: item.quality_score,
+          uncertaintyNote: item.uncertainty_note,
+          createdByModel: result.modelId,
+          modelProvider: result.modelProvider,
+          promptTemplateVersion: EVIDENCE_EXTRACTION.version,
+          schemaVersion: SCHEMA_VERSION,
+          dataOrigin: result.dataOrigin,
+          reviewStatus: "pending_review",
         });
+        created++;
       }
     }
   }

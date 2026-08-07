@@ -36,6 +36,9 @@ export const SOURCE_TYPES = [
   "crm_note",
   "brand_page",
   "documentation",
+  "sparktoro",
+  "profound",
+  "web_research",
   "other",
 ] as const;
 
@@ -51,6 +54,9 @@ export const SOURCE_TYPE_LABELS: Record<(typeof SOURCE_TYPES)[number], string> =
   crm_note: "CRM note",
   brand_page: "Brand page",
   documentation: "Documentation",
+  sparktoro: "SparkToro audience report",
+  profound: "Profound AI-visibility data",
+  web_research: "Deep web research",
   other: "Other",
 };
 
@@ -85,6 +91,7 @@ const SOURCE_SYSTEM_BY_FORMAT = {
   txt: "uploaded_txt",
   markdown: "uploaded_markdown",
   docx: "uploaded_docx",
+  pdf: "uploaded_pdf",
   pasted_text: "pasted_text",
   transcript: "transcript_text",
   search_console_csv: "search_console_export",
@@ -183,7 +190,7 @@ export async function createSourceFromUpload(
   const format = detectFormat(file.name, file.type);
   if (!format) {
     throw new ValidationError(
-      "Unsupported file type. Upload CSV, JSON, TXT, Markdown or DOCX, or paste the text directly.",
+      "Unsupported file type. Upload CSV, JSON, TXT, Markdown, DOCX or PDF, or paste the text directly.",
     );
   }
   verifyMagicBytes(format, file.bytes);
@@ -399,6 +406,7 @@ function formatFromSystem(system: string): string {
     uploaded_txt: "txt",
     uploaded_markdown: "markdown",
     uploaded_docx: "docx",
+    uploaded_pdf: "pdf",
     pasted_text: "pasted_text",
     transcript_text: "transcript",
     search_console_export: "search_console_csv",

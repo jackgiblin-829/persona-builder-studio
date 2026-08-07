@@ -1,14 +1,49 @@
 import "server-only";
-import { and, eq, sql as raw } from "drizzle-orm";
+import { and, eq, inArray, sql as raw } from "drizzle-orm";
 import { db } from "@/db/client";
-import { brands, dataSources, evidenceRecords, users } from "@/db/schema";
+import {
+  brands,
+  dataSources,
+  evidenceRecords,
+  pageInventory,
+  profoundResultSnapshots,
+  promptSets,
+  prompts,
+  users,
+} from "@/db/schema";
 import type { BrandContext } from "@/lib/auth/context";
 import { SEED_SOURCES } from "@fixtures/seed/sources";
+import { MOCK_CATEGORIES } from "@fixtures/profound/account";
+import { newId, ID_PREFIXES } from "@/lib/ids";
 import { createSourceFromPaste } from "@/services/sources";
 import { reviewEvidence } from "@/services/evidence";
 import { decideSegment, listSegments, startSegmentation } from "@/services/segments";
 import { approvePersonaVersion, listPersonas, startPersonaGeneration } from "@/services/personas";
-import { startPromptGeneration } from "@/services/prompt-sets";
+import {
+  approvePromptSetVersion,
+  reviewPrompts,
+  startPromptGeneration,
+} from "@/services/prompt-sets";
+import { refreshProfoundConfiguration, testProfoundConnection } from "@/services/profound-config";
+import { setCategoryMapping } from "@/services/profound-mapping";
+import { listDeployableSets } from "@/services/profound-links";
+import { reconcilePromptSetVersion } from "@/services/profound-reconcile";
+import { mockPromptId, seedMockProfoundUpload } from "@/adapters/profound";
+import { promptHash } from "@/lib/prompt-dedupe";
+import { startResultRetrieval } from "@/services/profound-results";
+import { classifyResult } from "@/lib/profound-results";
+import {
+  approveOpportunity,
+  listOpportunities,
+  startOpportunityGeneration,
+} from "@/services/content-opportunities";
+import { approveBrief, listBriefs, startBriefGeneration } from "@/services/content-brief";
+import {
+  approvePageAudit,
+  getPageAuditDetail,
+  listPageAudits,
+  startPageAuditGeneration,
+} from "@/services/page-audit";
 import { seedOrganizationAndBrand } from "./organization";
 import { drainQueue } from "./pipeline";
 
@@ -156,6 +191,316 @@ export async function runSeed(opts: { fresh: boolean }): Promise<SeedSummary> {
     );
   }
 
+  // ── Prompt-set approval ───────────────────────────────────────────────────
+  // A Profound deployment can only ever target an approved, immutable
+  // prompt-set version (§17, and enforced again in profound-deploy's
+  // `loadApprovedSet`), so every prompt generated above is bulk-approved and
+  // the set approved through the real service — the same review path a human
+  // reviewer would take, not a status column written in directly.
+  const generatedSets =
+    approvedPersonaIds.length === 0
+      ? []
+      : await db
+          .select({
+            personaId: promptSets.personaId,
+            currentVersionId: promptSets.currentVersionId,
+          })
+          .from(promptSets)
+          .where(
+            and(
+              eq(promptSets.organizationId, organizationId),
+              eq(promptSets.brandId, brandId),
+              inArray(promptSets.personaId, approvedPersonaIds),
+            ),
+          );
+
+  for (const set of generatedSets) {
+    if (!set.currentVersionId) continue;
+
+    const pending = await db
+      .select({ id: prompts.id })
+      .from(prompts)
+      .where(
+        and(
+          eq(prompts.promptSetVersionId, set.currentVersionId),
+          eq(prompts.reviewStatus, "pending_review"),
+        ),
+      );
+    if (pending.length > 0) {
+      await reviewPrompts(
+        ctx,
+        pending.map((row) => row.id),
+        "approved",
+      );
+    }
+
+    const { blockers } = await approvePromptSetVersion(ctx, set.currentVersionId);
+    if (blockers.length > 0) {
+      throw new Error(
+        `Seed prompt-set approval was blocked for persona ${set.personaId}: ${blockers.join(" | ")}`,
+      );
+    }
+  }
+
+  // ── Profound export & reconciliation ──────────────────────────────────────
+  // The app no longer pushes prompts to Profound automatically — the real
+  // flow is a human exporting a prompt set and pasting it into Profound's own
+  // UI. `seedMockProfoundUpload` models that upload having happened (the mock
+  // account otherwise has no way to know about prompts this product never
+  // sent it), then reconciliation runs exactly as it would in production:
+  // list what the account has, match by normalized text, link.
+  await testProfoundConnection(ctx);
+  await refreshProfoundConfiguration(ctx);
+
+  const productAnalyticsCategoryId = MOCK_CATEGORIES.find(
+    (category) => category.name === "Product analytics",
+  )?.id;
+  if (!productAnalyticsCategoryId) {
+    throw new Error("Seed fixture has no 'Product analytics' Profound category to map.");
+  }
+  await setCategoryMapping(ctx, { profoundCategoryId: productAnalyticsCategoryId });
+
+  const deployableSets = await listDeployableSets(ctx);
+
+  for (const personaId of approvedPersonaIds) {
+    const deployable = deployableSets.find((row) => row.personaId === personaId);
+    if (!deployable) continue;
+
+    const approvedPrompts = await db
+      .select({ promptText: prompts.promptText })
+      .from(prompts)
+      .where(
+        and(
+          eq(prompts.promptSetVersionId, deployable.versionId),
+          eq(prompts.reviewStatus, "approved"),
+        ),
+      );
+
+    seedMockProfoundUpload(
+      productAnalyticsCategoryId,
+      approvedPrompts.map((prompt) => {
+        const normalizedHash = promptHash(prompt.promptText);
+        return {
+          id: mockPromptId(productAnalyticsCategoryId, normalizedHash),
+          text: prompt.promptText,
+          topic: null,
+          tags: [],
+          personaId: null,
+          regions: ["us"],
+          platforms: ["chatgpt", "perplexity"],
+          status: "active",
+        };
+      }),
+    );
+
+    await reconcilePromptSetVersion(ctx, deployable.versionId);
+  }
+
+  // Milestone 6: retrieve results for every prompt just reconciled, over the
+  // 30 days ending today. The mock adapter's per-day generator needs no clock
+  // of its own — "today" here is only the edge of the window a real user
+  // would pick, not something the generator depends on for determinism.
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await startResultRetrieval(ctx, { startDate, endDate });
+  const results = await drainQueue({ workerId: "seed" });
+  if (results.failed > 0) {
+    throw new Error(
+      `Seed Profound result retrieval failed for ${results.failed} job(s):\n  ${results.errors.join("\n  ")}`,
+    );
+  }
+  const profoundJobsProcessed = results.processed;
+
+  const snapshots = await db
+    .select()
+    .from(profoundResultSnapshots)
+    .where(eq(profoundResultSnapshots.brandId, brandId));
+  const classifications = snapshots.map((snapshot) =>
+    classifyResult({
+      brandMentioned: snapshot.brandMentioned ?? false,
+      mentionCount: snapshot.mentionCount ?? 0,
+      shareOfVoice: snapshot.shareOfVoice,
+      mentions: (snapshot.mentions as { entity: string; share: number }[]) ?? [],
+    }),
+  );
+
+  // ── Milestone 7: page inventory ───────────────────────────────────────────
+  // Nothing else in the seed populates this table; content-gap analysis and
+  // page audits both need an existing-page inventory to reason about, so a
+  // small, realistic set of brand pages is inserted directly — the same way
+  // the ingestion loop above corrects `data_sources.source_system` directly
+  // rather than through a service that does not exist for this purpose.
+  const homepageUrl = "https://northwind-analytics.example/";
+  const homepageContent = HOMEPAGE_CONTENT;
+  await db.insert(pageInventory).values([
+    {
+      id: newId(ID_PREFIXES.pageInventory),
+      organizationId,
+      brandId,
+      url: homepageUrl,
+      canonicalUrl: homepageUrl,
+      title: "Northwind Analytics — Product analytics for regulated teams",
+      pageType: "homepage",
+      headings: ["Product analytics built for regulated teams"],
+      summary:
+        "Northwind Analytics is a product-analytics platform for regulated and security-sensitive companies, with self-hosted and private-cloud deployment.",
+      wordCount: homepageContent.split(/\s+/).length,
+      internalLinks: [
+        "https://northwind-analytics.example/private-cloud",
+        "https://northwind-analytics.example/lineage",
+        "https://northwind-analytics.example/governance",
+      ],
+      structuredData: [],
+    },
+    {
+      id: newId(ID_PREFIXES.pageInventory),
+      organizationId,
+      brandId,
+      url: "https://northwind-analytics.example/private-cloud",
+      canonicalUrl: "https://northwind-analytics.example/private-cloud",
+      title: "Northwind Private Cloud",
+      pageType: "product_page",
+      headings: ["Single-tenant deployment", "Data residency", "Onboarding"],
+      summary: "Single-tenant deployment inside the customer's own cloud account.",
+      wordCount: 420,
+      internalLinks: [homepageUrl],
+      structuredData: [],
+    },
+    {
+      id: newId(ID_PREFIXES.pageInventory),
+      organizationId,
+      brandId,
+      url: "https://northwind-analytics.example/governance",
+      canonicalUrl: "https://northwind-analytics.example/governance",
+      title: "Governance Console",
+      pageType: "product_page",
+      headings: ["Role-based access", "Retention policies", "Audit export"],
+      summary: "Role-based access, retention policies and audit export.",
+      wordCount: 380,
+      internalLinks: [homepageUrl],
+      structuredData: [],
+    },
+  ]);
+
+  // ── Milestone 7: content-gap analysis and opportunities ───────────────────
+  // Runs for every persona that actually made it through Profound deployment
+  // (has linked prompts and retrieved results) — there is no gap to analyze
+  // for a persona whose prompts were never sent to Profound.
+  let opportunitiesGenerated = 0;
+  let opportunitiesApproved = 0;
+  let briefsGenerated = 0;
+  let briefsApproved = 0;
+  let firstApprovedOpportunityId: string | null = null;
+  let contentJobsProcessed = 0;
+
+  for (const personaId of approvedPersonaIds) {
+    const deployable = deployableSets.find((row) => row.personaId === personaId);
+    if (!deployable) continue;
+
+    await startOpportunityGeneration(ctx, {
+      personaVersionId: deployable.personaVersionId,
+      promptSetVersionId: deployable.versionId,
+    });
+    const gapAnalysis = await drainQueue({ workerId: "seed" });
+    if (gapAnalysis.failed > 0) {
+      throw new Error(
+        `Seed content-gap analysis failed for ${gapAnalysis.failed} job(s):\n  ${gapAnalysis.errors.join("\n  ")}`,
+      );
+    }
+    contentJobsProcessed += gapAnalysis.processed;
+
+    const opportunities = await listOpportunities(ctx, {
+      personaVersionId: deployable.personaVersionId,
+    });
+    opportunitiesGenerated += opportunities.length;
+
+    // Approve every material opportunity (p1/p2) and leave the rest — including
+    // any `no_content_action` recommendations — pending, so the demo shows a
+    // reviewer's queue rather than a fully rubber-stamped one.
+    const toApprove = opportunities.filter(
+      (o) =>
+        o.recommendation !== "no_content_action" && (o.priority === "p1" || o.priority === "p2"),
+    );
+    for (const opportunity of toApprove) {
+      await approveOpportunity(ctx, opportunity.id);
+      opportunitiesApproved++;
+      if (!firstApprovedOpportunityId) firstApprovedOpportunityId = opportunity.id;
+    }
+  }
+
+  // ── Milestone 7: SEO brief ─────────────────────────────────────────────────
+  // One brief, generated from the first approved opportunity and then
+  // approved — demonstrating the full opportunity → brief → approval path
+  // the 16-step demo requires, not merely that generation is possible.
+  if (firstApprovedOpportunityId) {
+    await startBriefGeneration(ctx, { opportunityId: firstApprovedOpportunityId });
+    const briefGeneration = await drainQueue({ workerId: "seed" });
+    if (briefGeneration.failed > 0) {
+      throw new Error(
+        `Seed SEO brief generation failed for ${briefGeneration.failed} job(s):\n  ${briefGeneration.errors.join("\n  ")}`,
+      );
+    }
+    contentJobsProcessed += briefGeneration.processed;
+
+    const briefs = await listBriefs(ctx);
+    briefsGenerated += briefs.length;
+    const generatedBrief = briefs.find((b) => b.opportunityId === firstApprovedOpportunityId);
+    if (generatedBrief) {
+      await approveBrief(ctx, generatedBrief.id);
+      briefsApproved++;
+    }
+  }
+
+  // ── Milestone 7: homepage audit ────────────────────────────────────────────
+  // Audited against the same persona/prompt-set pair the opportunities came
+  // from, using the homepage content just inserted above — pasted content
+  // rather than a live fetch (§ Known limitations: no crawler is wired for
+  // this milestone).
+  let auditFindingsBySeverity: Record<string, number> = {};
+  let auditHomepageFindingCount = 0;
+  let auditSupportingFindingCount = 0;
+  const auditedPersona = approvedPersonaIds
+    .map((personaId) => deployableSets.find((row) => row.personaId === personaId))
+    .find((row) => row !== undefined);
+
+  if (auditedPersona) {
+    await startPageAuditGeneration(ctx, {
+      personaVersionId: auditedPersona.personaVersionId,
+      promptSetVersionId: auditedPersona.versionId,
+      scope: "homepage",
+      url: homepageUrl,
+      pageTitle: "Northwind Analytics homepage",
+      pageContent: homepageContent,
+    });
+    const auditGeneration = await drainQueue({ workerId: "seed" });
+    if (auditGeneration.failed > 0) {
+      throw new Error(
+        `Seed page audit generation failed for ${auditGeneration.failed} job(s):\n  ${auditGeneration.errors.join("\n  ")}`,
+      );
+    }
+    contentJobsProcessed += auditGeneration.processed;
+
+    const audits = await listPageAudits(ctx);
+    const latestAudit = audits[0];
+    if (latestAudit) {
+      const detail = await getPageAuditDetail(ctx, latestAudit.id);
+      auditHomepageFindingCount = detail.homepageFindings.length;
+      auditSupportingFindingCount = detail.supportingPageFindings.length;
+      auditFindingsBySeverity = detail.findings.reduce<Record<string, number>>((acc, finding) => {
+        acc[finding.severity] = (acc[finding.severity] ?? 0) + 1;
+        return acc;
+      }, {});
+
+      // Only approve when the audit found something specific enough to act
+      // on — an audit with zero findings is left pending rather than
+      // approved by default, matching the same "not every outcome is
+      // rubber-stamped" discipline as the opportunities above.
+      if (detail.findings.length > 0) {
+        await approvePageAudit(ctx, latestAudit.id);
+      }
+    }
+  }
+
   const counts = await summarise(brandId);
 
   return {
@@ -184,13 +529,62 @@ export async function runSeed(opts: { fresh: boolean }): Promise<SeedSummary> {
     "control pairs": counts.promptPairs,
     "prompt evidence citations": counts.promptEvidence,
     "prompt duplicate warnings": counts.promptWarnings,
+    "profound category mapped": counts.profoundCategoryStatus ?? "not mapped",
+    "profound prompts linked": counts.profoundPromptsLinked,
+    "profound result snapshots": snapshots.length,
+    "profound brand-absent snapshots": classifications.filter((c) => c === "brand_absent").length,
+    "profound competitor-dominated snapshots": classifications.filter(
+      (c) => c === "competitor_dominated",
+    ).length,
+    "page inventory rows": counts.pageInventory,
+    "content opportunities generated": opportunitiesGenerated,
+    "content opportunities approved": opportunitiesApproved,
+    "content opportunities by recommendation": summariseByColumn(
+      await opportunityRecommendationCounts(brandId),
+    ),
+    "seo briefs generated": briefsGenerated,
+    "seo briefs approved": briefsApproved,
+    "page audit findings on this page": auditHomepageFindingCount,
+    "page audit findings belonging elsewhere": auditSupportingFindingCount,
+    "page audit findings by severity": summariseByColumn(auditFindingsBySeverity),
     "jobs processed":
       ingestion.processed +
       segmentation.processed +
       synthesis.processed +
-      promptGeneration.processed,
+      promptGeneration.processed +
+      profoundJobsProcessed +
+      contentJobsProcessed,
   };
 }
+
+function summariseByColumn(counts: Record<string, number>): string {
+  const entries = Object.entries(counts);
+  if (entries.length === 0) return "none";
+  return entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(", ");
+}
+
+async function opportunityRecommendationCounts(brandId: string): Promise<Record<string, number>> {
+  const rows = await db.execute<{ recommendation: string; count: number }>(raw`
+    SELECT recommendation, COUNT(*)::int AS count
+    FROM content_opportunities
+    WHERE brand_id = ${brandId}
+    GROUP BY recommendation
+  `);
+  const out: Record<string, number> = {};
+  for (const row of rows) out[row.recommendation] = row.count;
+  return out;
+}
+
+const HOMEPAGE_CONTENT = `Northwind Analytics helps teams understand their product data with confidence. We are a leading platform trusted by data, security and product teams everywhere.
+
+Our platform brings together analytics, governance and deployment flexibility in one place, so your organization can move fast without compromising on control. Northwind Analytics is built for companies that take data seriously.
+
+Whatever your team is trying to accomplish, Northwind Analytics gives you the tools to get there. Explore private cloud deployment, column-level lineage, and role-based governance, all backed by a platform built for organizations with real requirements.
+
+Ready to see what Northwind Analytics can do for your team? Get started today.`;
 
 const SOURCE_SYSTEM_BY_FORMAT = {
   transcript: "transcript_text",
@@ -252,6 +646,9 @@ async function summarise(brandId: string) {
     prompt_pairs: number;
     prompt_evidence: number;
     prompt_warnings: number;
+    profound_category_status: string | null;
+    profound_prompts_linked: number;
+    page_inventory: number;
   }>(raw`
     SELECT
       (SELECT COUNT(*)::int FROM data_sources WHERE brand_id = ${brandId}) AS sources,
@@ -273,7 +670,10 @@ async function summarise(brandId: string) {
       (SELECT COUNT(*)::int FROM prompts WHERE brand_id = ${brandId} AND prompt_type = 'generic_control') AS control_prompts,
       (SELECT COUNT(*)::int FROM prompt_pairs pp JOIN prompt_set_versions psv ON psv.id = pp.prompt_set_version_id WHERE psv.brand_id = ${brandId}) AS prompt_pairs,
       (SELECT COUNT(*)::int FROM prompt_evidence pe JOIN prompts p ON p.id = pe.prompt_id WHERE p.brand_id = ${brandId}) AS prompt_evidence,
-      (SELECT COUNT(*)::int FROM prompts WHERE brand_id = ${brandId} AND similarity_warning IS NOT NULL) AS prompt_warnings
+      (SELECT COUNT(*)::int FROM prompts WHERE brand_id = ${brandId} AND similarity_warning IS NOT NULL) AS prompt_warnings,
+      (SELECT status FROM profound_category_mappings WHERE brand_id = ${brandId} ORDER BY updated_at DESC LIMIT 1) AS profound_category_status,
+      (SELECT COUNT(*)::int FROM profound_prompt_links WHERE brand_id = ${brandId}) AS profound_prompts_linked,
+      (SELECT COUNT(*)::int FROM page_inventory WHERE brand_id = ${brandId}) AS page_inventory
   `);
   const row = rows[0];
   return {
@@ -297,6 +697,9 @@ async function summarise(brandId: string) {
     promptPairs: row?.prompt_pairs ?? 0,
     promptEvidence: row?.prompt_evidence ?? 0,
     promptWarnings: row?.prompt_warnings ?? 0,
+    profoundCategoryStatus: row?.profound_category_status ?? null,
+    profoundPromptsLinked: row?.profound_prompts_linked ?? 0,
+    pageInventory: row?.page_inventory ?? 0,
   };
 }
 

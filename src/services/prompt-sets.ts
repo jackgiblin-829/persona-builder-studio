@@ -213,6 +213,35 @@ export async function listPromptSets(ctx: BrandContext): Promise<PromptSetListRo
   }));
 }
 
+/**
+ * Approved prompt-set versions for the brand — the picker milestone 7's
+ * content workflows need alongside `listApprovedPersonaVersions`.
+ */
+export async function listApprovedPromptSetVersions(ctx: BrandContext): Promise<
+  {
+    promptSetId: string;
+    promptSetName: string;
+    promptSetVersionId: string;
+    version: number;
+    personaVersionId: string;
+  }[]
+> {
+  return db
+    .select({
+      promptSetId: promptSets.id,
+      promptSetName: promptSets.name,
+      promptSetVersionId: promptSetVersions.id,
+      version: promptSetVersions.version,
+      personaVersionId: promptSetVersions.personaVersionId,
+    })
+    .from(promptSets)
+    .innerJoin(promptSetVersions, eq(promptSetVersions.id, promptSets.approvedVersionId))
+    .where(
+      and(eq(promptSets.organizationId, ctx.organizationId), eq(promptSets.brandId, ctx.brandId)),
+    )
+    .orderBy(asc(promptSets.name));
+}
+
 export type PromptSetDetail = {
   set: typeof promptSets.$inferSelect;
   version: typeof promptSetVersions.$inferSelect;

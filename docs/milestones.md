@@ -24,9 +24,12 @@ Repository, documentation, local infrastructure, auth, organizations, brands, da
 - [x] Tests: crypto, permissions, queue claim/retry, tenant isolation
 
 ## Milestone 2 — Evidence ✅
-File upload, URL ingestion, parsing, redaction, evidence extraction, embeddings, evidence explorer.
+File upload, URL ingestion, parsing, redaction, evidence extraction, embeddings, evidence explorer. Extended after the initial build with three vendor-sourced evidence inputs, alongside uploads — SparkToro audience research, Profound's own account-level AI-visibility data, and OpenAI-powered deep web research — all feeding the same `dataSources → sourceDocuments → extractEvidence` pipeline uploads use.
 
-- [x] Upload (CSV/JSON/TXT/MD/DOCX), paste, transcript, GSC CSV; type + size + magic-byte checks
+- [x] Upload (CSV/JSON/TXT/MD/DOCX/PDF), paste, transcript, GSC CSV; type + size + magic-byte checks
+- [x] SparkToro adapter (`src/adapters/sparktoro/`) + `sparktoro_section` job — one job per requested section, rendered into evidence prose
+- [x] Profound account-evidence pull (`src/jobs/handlers/profound-evidence.ts`) — visibility/citations/sentiment by topic for the mapped category, independent of any prompt this product deployed
+- [x] Deep web research (`src/jobs/handlers/web-research.ts`) — brand context → planned research questions → `webSearch` per question → evidence with citation URLs
 - [~] URL ingestion: guard, robots, canonicalisation and caps implemented and tested; `crawl_url` job handler not yet wired (no UI control shown)
 - [x] Parsers → `source_documents`; chunker; `src/lib/redaction.ts`
 - [x] Versioned extraction prompt template + Zod schema + bounded retries
@@ -62,28 +65,26 @@ _At the end of this milestone the app must be market-testable without a live Pro
 - [x] Prompt-set approval → immutable version
 - [x] Tests: hashing, dedupe, tag generation, generation guardrails (no forced brand insertion)
 
-## Milestone 5 — Profound deployment
-Connection, configuration retrieval, persona mapping, duplicate checks, dry run, creation, idempotency, receipts, retry.
+## Milestone 5 — Profound export & reconciliation ✅
+Superseded design (ADR-013): connection, configuration retrieval, category mapping, export, and reconciliation against the account by text match — no automated push. The persona identity Profound would have needed to match is unnecessary; the tool's own `persona:<slug>` tag, stamped at prompt-generation time, is the durable identity.
 
-- [ ] Connection + secure credential storage + connection test
-- [ ] Config retrieval: categories, regions, models, topics, tags, assets, personas
-- [ ] Category mapping + persona mapping with the 5 mapping states and tag fallback
-- [ ] Existing-prompt retrieval; exact + semantic duplicate checks
-- [ ] Payload builder + `dry_run: true` + preview + explicit approval gate
-- [ ] Idempotent creation, per-item outcomes, Profound prompt id storage
-- [ ] Partial-failure handling and failed-only retry
-- [ ] Immutable sync receipt + JSON/CSV export
-- [ ] Tests: payload mapping, idempotency, partial retry, dry-run-required guard
+- [x] Connection + secure credential storage + connection test
+- [x] Config retrieval: categories, regions, models, topics, tags, assets, personas
+- [x] Category mapping (persona mapping and the 5-state tag-fallback UI are gone — no Profound-side persona object is needed)
+- [x] Export: prompt-set version → JSON/CSV/Markdown carrying Profound tags/metadata (`src/services/prompt-export.ts`, unchanged), for manual upload into Profound's own UI
+- [x] Reconciliation: `listPrompts(categoryId)` read, hash match → auto-link, embedding-semantic match → auto-link, lexical-only match → ambiguous (manual decision), no match → unmatched; manual-link fallback
+- [x] Idempotent linking via the existing `(organization_id, profound_category_id, normalized_hash)` unique index — unchanged from the old design, just written by reconciliation instead of a push
+- [x] Tests: hash/semantic/lexical matching, idempotency, tenant isolation, manual-link fallback (`tests/integration/profound-reconcile.test.ts`)
 
-## Milestone 6 — Results
+## Milestone 6 — Results ✅
 Result retrieval, visibility summary, citation summary, raw-answer inspection, persona vs control.
 
-- [ ] Retrieval for linked prompts only, user-selected date range, immutable snapshots
-- [ ] Persona performance panel with all specified metrics and filters
-- [ ] Persona vs generic-control comparison
-- [ ] Missing expected answer elements; brand-absent and competitor-dominated prompts
-- [ ] Links/identifiers back to Profound prompt records
-- [ ] Tests: result normalization, snapshot idempotency, control comparison maths
+- [x] Retrieval for linked prompts only, user-selected date range, immutable snapshots
+- [x] Persona performance panel with all specified metrics and filters
+- [x] Persona vs generic-control comparison
+- [x] Missing expected answer elements; brand-absent and competitor-dominated prompts
+- [x] Links/identifiers back to Profound prompt records
+- [x] Tests: result normalization, snapshot idempotency, control comparison maths
 
 ## Milestone 7 — Content workflows
 Content opportunities, SEO brief, page audit, exports.

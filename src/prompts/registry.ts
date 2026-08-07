@@ -364,6 +364,28 @@ Profound and competitor evidence:
 {{market_evidence}}`,
 };
 
+export const WEB_RESEARCH_PLANNING: PromptTemplate = {
+  id: "web_research_planning",
+  version: "1.0.0",
+  purpose: "Turn brand context into a short list of externally-answerable research questions.",
+  modelTier: "economical",
+  system: `You plan deep research for a buyer-persona research tool.
+
+Given a brand's context — its description, competitors, and topics already
+surfaced by its existing segments and prompt sets — propose 3-6 specific
+research questions that a web search could actually answer: industry
+commentary, review-site sentiment, analyst coverage, forum discussion, press
+coverage. Do not propose a question only the brand itself could answer (its
+own pricing, its own roadmap) — that is not deep research, it is a survey.
+
+Each question should target a different angle. Do not propose near-duplicate
+questions.
+
+Return valid JSON matching the schema: a list of { query, rationale }.`,
+  user: `Brand context:
+{{brand_context}}`,
+};
+
 export const TEMPLATES = {
   [EVIDENCE_EXTRACTION.id]: EVIDENCE_EXTRACTION,
   [CANDIDATE_SEGMENTATION.id]: CANDIDATE_SEGMENTATION,
@@ -372,6 +394,7 @@ export const TEMPLATES = {
   [CONTENT_GAP.id]: CONTENT_GAP,
   [SEO_BRIEF.id]: SEO_BRIEF,
   [PAGE_AUDIT.id]: PAGE_AUDIT,
+  [WEB_RESEARCH_PLANNING.id]: WEB_RESEARCH_PLANNING,
 } as const satisfies Record<string, PromptTemplate>;
 
 export type TemplateId = keyof typeof TEMPLATES;

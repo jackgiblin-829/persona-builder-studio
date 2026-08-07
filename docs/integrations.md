@@ -45,6 +45,23 @@ Behaviour: schema validation with Zod after the call; bounded retries (default 2
 
 Mock: deterministic generation keyed by a hash of `(templateId, templateVersion, input)` reading from `fixtures/openai/*.json`; embeddings are a deterministic hashed bag-of-words projection into 1536 dims, so semantic-similarity behaviour is stable and testable without a key.
 
+### Deep web research (`webSearch`)
+
+A separate adapter method, not schema-based like `generateStructured` — the output is free-text findings plus a citation list, not a structured record:
+
+```ts
+webSearch(req: { query: string; brandContext: string }): Promise<{
+  findings: string;
+  citations: { url: string; title: string | null }[];
+  modelProvider: string; modelId: string; dataOrigin: "mock" | "live";
+  tokensIn: number; tokensOut: number; costCents: number; raw?: Record<string, unknown>;
+}>
+```
+
+**@unverified.** Assumed to be `POST /v1/responses` with `tools: [{ type: "web_search" }]`, reading citations back from `url_citation` annotations on the output text (`src/adapters/openai/live.ts`). Powers `src/jobs/handlers/web-research.ts` (§ deep research): a planning call (`WEB_RESEARCH_PLANNING` template, `src/prompts/registry.ts`) turns the brand's own context — name, description, competitors — into 3-6 externally-answerable research questions, one `webSearch` call runs per question, and the findings become `dataSources` rows (`source_type = 'web_research'`) that flow through the ordinary evidence pipeline like any upload.
+
+Mock: `fixtures/openai/web-research.ts` returns one of a fixed pool of plausible findings paragraphs, keyed deterministically by the query text, with citation URLs on `mock-source.example` — deliberately never a real-looking domain, so a mock finding is never mistaken for a genuine citation.
+
 ## Profound
 
 Interface (`src/adapters/profound/types.ts`) — read, write and reporting operations exactly as specified:
@@ -55,7 +72,12 @@ getCategoryTopics / getCategoryTags / getAssets /
 getOrganizationPersonas / getCategoryPersonas / listPrompts
 createPrompts (supports dryRun) / updatePrompt / updatePromptStatus
 queryVisibility / queryCitations / querySentiment / getPromptAnswers
+queryAccountVisibility / queryAccountCitations / queryAccountSentiment
 ```
+
+**`createPrompts` is no longer called by the app** (ADR-013 — deployment is export-only now; the user uploads an export into Profound's own UI by hand). It stays on the adapter and in both `live.ts`/`mock.ts` because it is still a real Profound operation and removing it would be removing correct code for no reason, but nothing in `src/` calls it. `listPrompts` is the one still-used read: `src/services/profound-reconcile.ts` calls it to find the account's prompts and link them back to this product's own prompt rows by normalized-text match.
+
+**`queryAccountVisibility` / `queryAccountCitations` / `queryAccountSentiment`** are new (§ account-level evidence) and are scoped to a *category*, not to a list of prompts this product deployed — the brand's existing AI-visibility data across everything Profound already tracks, grouped by topic, used as an evidence source for persona building via `src/jobs/handlers/profound-evidence.ts`. This is the least-certain endpoint assumption in this adapter: `docs/integrations.md`'s existing `queryVisibility`/`queryCitations`/`querySentiment` assumptions are extended with `category_id`/`scope: "all"`/`group_by: "topic"` in place of an explicit `prompt_ids` list, which has not been checked against any real account-level reporting documentation. Re-verify this specifically, separately from the rest of the adapter, before enabling live mode for account-evidence pulls.
 
 Endpoint assumptions (**unverified**, base `https://api.tryprofound.com`):
 
@@ -69,13 +91,14 @@ Endpoint assumptions (**unverified**, base `https://api.tryprofound.com`):
 | List prompts | `GET /v1/categories/{id}/prompts?limit&cursor` |
 | Create prompts | `POST /v1/categories/{id}/prompts` with `{ prompts: [...], dry_run: boolean }` |
 | Visibility / citations | `POST /v1/reports/visibility`, `POST /v1/reports/citations` |
+| Sentiment | `POST /v1/reports/sentiment` |
 | Raw answers | `GET /v1/prompts/{id}/answers?start_date&end_date` |
 
 **Persona creation is deliberately absent.** The spec forbids assuming it exists. When no Profound persona matches, the mapping falls back to the deterministic tag `persona:<internal-slug>` with mapping status `tag_fallback` and a visible warning in the deployment preview.
 
 If `dry_run` turns out not to be supported by the live API, the adapter must surface that as `DryRunUnsupportedError` and the deployment must stop — it must not proceed to creation. This is asserted in `tests/unit/profound-payload.test.ts`.
 
-Mock: `fixtures/profound/*.json` provides one category, existing prompts (including one exact duplicate and one near-duplicate of the seeded set), a successful dry run, a partial creation failure (4 of 24 fail with a retryable error), and 30 days of result data.
+Mock: `fixtures/profound/account.ts` provides one category, existing prompts (including one exact duplicate and one near-duplicate of the seeded set), a successful dry run, and a partial creation failure (4 of 24 fail with a retryable error). `fixtures/profound/results.ts` generates the reporting side (§25): one deterministic run per UTC day, per prompt, per model, for whatever date range the caller asks for — not a fixed 30-day file, since the retrieval window is user-selected. See Milestone 6 in `docs/progress.md` for how that generator manufactures brand-absent and competitor-dominated cases.
 
 ## SparkToro
 

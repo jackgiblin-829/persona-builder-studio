@@ -5,7 +5,7 @@ import { dataSources, evidenceEmbeddings, evidenceRecords } from "@/db/schema";
 import { getOpenAIAdapter } from "@/adapters/openai";
 import { AppError } from "@/lib/errors";
 import { newId, ID_PREFIXES } from "@/lib/ids";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 import { markStage } from "./ingest-source";
 
@@ -71,60 +71,47 @@ registerJob(JOB_TYPES.embedEvidence, async ({ job }) => {
 
   for (let i = 0; i < pending.length; i += BATCH_SIZE) {
     const batch = pending.slice(i, i + BATCH_SIZE);
-    const started = Date.now();
-    try {
-      const result = await adapter.embed({
-        // The claim carries the meaning; the quote grounds it in real wording.
-        texts: batch.map((row) => `${row.normalizedClaim}\n${row.redactedText}`),
-      });
-
-      await recordVendorUsage({
+    const result = await withVendorUsage(
+      {
         organizationId,
         brandId: scopedBrandId,
         vendor: "openai",
         operation: "embed_evidence",
         mode,
         jobId: job.id,
-        durationMs: Date.now() - started,
-        retryCount: 0,
-        outcome: "success",
-        tokensIn: result.tokensIn,
-        costCents: result.costCents,
-      });
+      },
+      () =>
+        adapter.embed({
+          // The claim carries the meaning; the quote grounds it in real wording.
+          texts: batch.map((row) => `${row.normalizedClaim}\n${row.redactedText}`),
+        }),
+      (embedResult) => ({ tokensIn: embedResult.tokensIn, costCents: embedResult.costCents }),
+      { swallow: true },
+    );
 
-      for (let j = 0; j < batch.length; j++) {
-        const row = batch[j]!;
-        const embedding = result.embeddings[j];
-        if (!embedding) continue;
-        await db
-          .insert(evidenceEmbeddings)
-          .values({
-            id: newId(ID_PREFIXES.evidenceEmbedding),
-            organizationId,
-            brandId: scopedBrandId,
-            evidenceId: row.id,
-            modelId: result.modelId,
-            dimensions: result.dimensions,
-            dataOrigin: result.dataOrigin,
-            embedding,
-          })
-          .onConflictDoNothing();
-        embedded++;
-      }
-    } catch (error) {
+    if (!result) {
       failedBatches++;
-      await recordVendorUsage({
-        organizationId,
-        brandId: scopedBrandId,
-        vendor: "openai",
-        operation: "embed_evidence",
-        mode,
-        jobId: job.id,
-        durationMs: Date.now() - started,
-        retryCount: 0,
-        outcome: "failure",
-        errorCode: error instanceof Error ? error.name : "unknown",
-      });
+      continue;
+    }
+
+    for (let j = 0; j < batch.length; j++) {
+      const row = batch[j]!;
+      const embedding = result.embeddings[j];
+      if (!embedding) continue;
+      await db
+        .insert(evidenceEmbeddings)
+        .values({
+          id: newId(ID_PREFIXES.evidenceEmbedding),
+          organizationId,
+          brandId: scopedBrandId,
+          evidenceId: row.id,
+          modelId: result.modelId,
+          dimensions: result.dimensions,
+          dataOrigin: result.dataOrigin,
+          embedding,
+        })
+        .onConflictDoNothing();
+      embedded++;
     }
   }
 

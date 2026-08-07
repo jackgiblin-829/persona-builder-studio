@@ -23,7 +23,7 @@ import { buildPromptMetadata } from "@/lib/profound-tags";
 import { PROMPT_GENERATION, renderTemplate } from "@/prompts/registry";
 import { promptGenerationSchema, SCHEMA_VERSION } from "@/prompts/schemas";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 import { loadBrandContext } from "./ingest-source";
 
@@ -162,60 +162,61 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
 
   const { adapter, mode } = await getOpenAIAdapter(brand.organizationId);
   const jsonSchema = toStrictJsonSchema(promptGenerationSchema, "PromptGeneration");
-  const started = Date.now();
 
-  const result = await adapter.generateStructured({
-    templateId: PROMPT_GENERATION.id,
-    templateVersion: PROMPT_GENERATION.version,
-    schemaVersion: SCHEMA_VERSION,
-    system: PROMPT_GENERATION.system,
-    user: renderTemplate(PROMPT_GENERATION, {
-      persona: renderPersona(brand, version, fieldRows, evidenceByField),
-      retrieved_evidence: [...evidenceById.values()]
-        .map((row) => `[${row.evidenceId}] (${row.category}) ${row.claim}`)
-        .join("\n"),
-      sparktoro_signals: "",
-      seo_signals: "",
-      existing_prompts: existingPrompts.map((row) => row.text).join("\n"),
-    }),
-    schema: promptGenerationSchema,
-    schemaName: "PromptGeneration",
-    jsonSchema,
-    modelTier: PROMPT_GENERATION.modelTier,
-    mockContext: {
-      brandName: brand.name,
-      brandDescription: brand.description,
-      competitorNames: competitorRows.map((row) => row.name),
-      personaName: version.name,
-      segmentDefinition: version.segmentDefinition,
-      fields: mockFields,
-      evidence: [...evidenceById.values()].map((row) => ({
-        id: row.evidenceId,
-        claim: row.claim,
-        category: row.category,
-        sourceType: row.sourceType,
-        journeyStage: row.journeyStage,
-        entities: row.entities,
-        vocabulary: row.vocabulary,
-      })),
-      existingPromptTexts: existingPrompts.map((row) => row.text),
+  const result = await withVendorUsage(
+    {
+      organizationId: brand.organizationId,
+      brandId,
+      vendor: "openai",
+      operation: "prompt_generation",
+      mode,
+      jobId: job.id,
     },
-  });
-
-  await recordVendorUsage({
-    organizationId: brand.organizationId,
-    brandId,
-    vendor: "openai",
-    operation: "prompt_generation",
-    mode,
-    jobId: job.id,
-    durationMs: Date.now() - started,
-    retryCount: result.attempts - 1,
-    outcome: "success",
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
-    costCents: result.costCents,
-  });
+    () =>
+      adapter.generateStructured({
+        templateId: PROMPT_GENERATION.id,
+        templateVersion: PROMPT_GENERATION.version,
+        schemaVersion: SCHEMA_VERSION,
+        system: PROMPT_GENERATION.system,
+        user: renderTemplate(PROMPT_GENERATION, {
+          persona: renderPersona(brand, version, fieldRows, evidenceByField),
+          retrieved_evidence: [...evidenceById.values()]
+            .map((row) => `[${row.evidenceId}] (${row.category}) ${row.claim}`)
+            .join("\n"),
+          sparktoro_signals: "",
+          seo_signals: "",
+          existing_prompts: existingPrompts.map((row) => row.text).join("\n"),
+        }),
+        schema: promptGenerationSchema,
+        schemaName: "PromptGeneration",
+        jsonSchema,
+        modelTier: PROMPT_GENERATION.modelTier,
+        mockContext: {
+          brandName: brand.name,
+          brandDescription: brand.description,
+          competitorNames: competitorRows.map((row) => row.name),
+          personaName: version.name,
+          segmentDefinition: version.segmentDefinition,
+          fields: mockFields,
+          evidence: [...evidenceById.values()].map((row) => ({
+            id: row.evidenceId,
+            claim: row.claim,
+            category: row.category,
+            sourceType: row.sourceType,
+            journeyStage: row.journeyStage,
+            entities: row.entities,
+            vocabulary: row.vocabulary,
+          })),
+          existingPromptTexts: existingPrompts.map((row) => row.text),
+        },
+      }),
+    (generationResult) => ({
+      retryCount: generationResult.attempts - 1,
+      tokensIn: generationResult.tokensIn,
+      tokensOut: generationResult.tokensOut,
+      costCents: generationResult.costCents,
+    }),
+  );
 
   // ── Validate before storing ───────────────────────────────────────────────
 

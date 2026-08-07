@@ -2,6 +2,7 @@ import "server-only";
 import { and, desc, eq, gte, sql as raw } from "drizzle-orm";
 import { db } from "@/db/client";
 import { vendorUsage } from "@/db/schema";
+import { AppError } from "@/lib/errors";
 import { newId, ID_PREFIXES } from "@/lib/ids";
 import { logVendorCall } from "@/lib/logger";
 import type { ScopeContext } from "@/lib/auth/context";
@@ -65,6 +66,74 @@ export async function recordVendorUsage(entry: VendorUsageEntry): Promise<void> 
     requestHash: entry.requestHash,
     errorCode: entry.errorCode,
   });
+}
+
+export type VendorUsageContext = Omit<
+  VendorUsageEntry,
+  | "durationMs"
+  | "outcome"
+  | "errorCode"
+  | "retryCount"
+  | "tokensIn"
+  | "tokensOut"
+  | "credits"
+  | "costCents"
+>;
+
+function defaultErrorCode(error: unknown): string {
+  if (error instanceof AppError) return error.code;
+  if (error instanceof Error) return error.name;
+  return "unknown";
+}
+
+/**
+ * Times a vendor call and records its usage, success or failure, in one place
+ * — every call site used to hand-roll its own try/catch/recordVendorUsage,
+ * which meant a change to that bookkeeping had to be applied at each one by
+ * hand. `onSuccess` attaches result-derived fields (tokens, cost, credits);
+ * pass `{ swallow: true }` for a call site where one failure must not abort
+ * the caller (the failure is still recorded, `undefined` is returned instead
+ * of throwing).
+ */
+export async function withVendorUsage<T>(
+  context: VendorUsageContext,
+  fn: () => Promise<T>,
+  onSuccess?: (result: T) => Partial<VendorUsageEntry>,
+): Promise<T>;
+export async function withVendorUsage<T>(
+  context: VendorUsageContext,
+  fn: () => Promise<T>,
+  onSuccess: ((result: T) => Partial<VendorUsageEntry>) | undefined,
+  options: { swallow: true },
+): Promise<T | undefined>;
+export async function withVendorUsage<T>(
+  context: VendorUsageContext,
+  fn: () => Promise<T>,
+  onSuccess?: (result: T) => Partial<VendorUsageEntry>,
+  options?: { swallow?: boolean },
+): Promise<T | undefined> {
+  const started = Date.now();
+  try {
+    const result = await fn();
+    await recordVendorUsage({
+      ...context,
+      retryCount: 0,
+      durationMs: Date.now() - started,
+      outcome: "success",
+      ...(onSuccess?.(result) ?? {}),
+    });
+    return result;
+  } catch (error) {
+    await recordVendorUsage({
+      ...context,
+      retryCount: 0,
+      durationMs: Date.now() - started,
+      outcome: "failure",
+      errorCode: defaultErrorCode(error),
+    });
+    if (options?.swallow) return undefined;
+    throw error;
+  }
 }
 
 export type UsageSummaryRow = {

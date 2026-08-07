@@ -23,8 +23,6 @@ export const CAPABILITIES = [
   "prompt:generate",
   "prompt:approve",
   "profound:configure",
-  "profound:dry_run",
-  "profound:deploy",
   "profound:retrieve_results",
   "content:generate",
   "content:approve",
@@ -51,9 +49,6 @@ const REQUIRED_ROLE: Record<Capability, Role> = {
   "prompt:generate": "editor",
   "prompt:approve": "editor",
   "profound:configure": "admin",
-  "profound:dry_run": "editor",
-  // Writing to the customer's Profound account is an admin action.
-  "profound:deploy": "admin",
   "profound:retrieve_results": "editor",
   "content:generate": "editor",
   "content:approve": "editor",

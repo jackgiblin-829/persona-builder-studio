@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { deleteSourceAction, retrySourceAction } from "@/app/actions/sources";
+import { requestWebResearchAction } from "@/app/actions/web-research";
 import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { SourceUploadForms } from "@/components/forms/source-forms";
 import {
@@ -71,6 +72,26 @@ export default async function SourcesPage({ params }: { params: Promise<{ brandI
           Your role ({ctx.role}) can view sources but not upload them.
         </p>
       )}
+
+      {canUpload ? (
+        <div className="mb-5">
+          <Card>
+            <CardHeader
+              title="Deep research"
+              description="Plans a few research questions from this brand's own context — competitors, description — and runs a web search for each. Findings feed the evidence pipeline like any other source."
+            />
+            <div className="px-4 py-4">
+              <ActionForm
+                action={requestWebResearchAction}
+                csrfToken={csrfToken}
+                hidden={{ brandId }}
+              >
+                <SubmitButton label="Run deep research" pendingLabel="Queuing…" />
+              </ActionForm>
+            </div>
+          </Card>
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader

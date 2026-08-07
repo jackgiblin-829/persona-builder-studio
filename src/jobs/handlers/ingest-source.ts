@@ -12,6 +12,7 @@ import {
   parseDocx,
   parseJson,
   parseMarkdown,
+  parsePdf,
   parseSearchConsoleCsv,
   parseText,
   parseTranscript,
@@ -70,6 +71,9 @@ registerJob(JOB_TYPES.ingestSource, async ({ job }) => {
         break;
       case "docx":
         parsed = await parseDocx(bytes, label);
+        break;
+      case "pdf":
+        parsed = await parsePdf(bytes, label);
         break;
       case "transcript":
         parsed = parseTranscript(bytes.toString("utf8"), label);

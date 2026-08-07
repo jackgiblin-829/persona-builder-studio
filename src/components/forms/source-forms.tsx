@@ -27,7 +27,7 @@ export function SourceUploadForms({ brandId, csrfToken }: { brandId: string; csr
     <Card>
       <CardHeader
         title="Add a source"
-        description="CSV, JSON, TXT, Markdown and DOCX up to 25 MB, or paste text directly."
+        description="CSV, JSON, TXT, Markdown, DOCX and PDF up to 25 MB, or paste text directly."
         actions={
           <div className="flex rounded-md border border-surface-border p-0.5" role="tablist">
             {(["upload", "paste"] as const).map((value) => (
@@ -83,13 +83,13 @@ export function SourceUploadForms({ brandId, csrfToken }: { brandId: string; csr
                   ))}
                 </Select>
               </Field>
-              <Field label="File" htmlFor="file" required hint="CSV, JSON, TXT, MD or DOCX.">
+              <Field label="File" htmlFor="file" required hint="CSV, JSON, TXT, MD, DOCX or PDF.">
                 <input
                   id="file"
                   name="file"
                   type="file"
                   required
-                  accept=".csv,.json,.txt,.md,.markdown,.docx,text/csv,application/json,text/plain,text/markdown"
+                  accept=".csv,.json,.txt,.md,.markdown,.docx,.pdf,text/csv,application/json,text/plain,text/markdown,application/pdf"
                   className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-accent-soft file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-accent-ink"
                 />
               </Field>

@@ -10,9 +10,9 @@ import {
   pageAudits,
   personaVersions,
   personas,
+  profoundCategoryMappings,
   profoundPromptLinks,
   profoundResultSnapshots,
-  profoundSyncJobs,
   promptSetVersions,
   prompts,
   segmentCandidates,
@@ -43,7 +43,7 @@ export type WorkflowCounts = {
   controlPrompts: number;
   approvedPromptSets: number;
   profoundLinks: number;
-  syncJobs: number;
+  categoryMapped: number;
   resultSnapshots: number;
   opportunities: number;
   briefs: number;
@@ -69,7 +69,7 @@ export async function getWorkflowStatus(ctx: BrandContext): Promise<{
     controlRows,
     approvedSetRows,
     linkRows,
-    syncRows,
+    categoryMappingRows,
     snapshotRows,
     opportunityRows,
     briefRows,
@@ -110,7 +110,10 @@ export async function getWorkflowStatus(ctx: BrandContext): Promise<{
       .select({ n: count() })
       .from(profoundPromptLinks)
       .where(eq(profoundPromptLinks.brandId, brandId)),
-    db.select({ n: count() }).from(profoundSyncJobs).where(eq(profoundSyncJobs.brandId, brandId)),
+    db
+      .select({ n: count() })
+      .from(profoundCategoryMappings)
+      .where(eq(profoundCategoryMappings.brandId, brandId)),
     db
       .select({ n: count() })
       .from(profoundResultSnapshots)
@@ -141,7 +144,7 @@ export async function getWorkflowStatus(ctx: BrandContext): Promise<{
     controlPrompts: controlRows[0]?.n ?? 0,
     approvedPromptSets: approvedSetRows[0]?.n ?? 0,
     profoundLinks: linkRows[0]?.n ?? 0,
-    syncJobs: syncRows[0]?.n ?? 0,
+    categoryMapped: categoryMappingRows[0]?.n ?? 0,
     resultSnapshots: snapshotRows[0]?.n ?? 0,
     opportunities: opportunityRows[0]?.n ?? 0,
     briefs: briefRows[0]?.n ?? 0,
@@ -187,15 +190,15 @@ export async function getWorkflowStatus(ctx: BrandContext): Promise<{
     },
     {
       key: "mapping",
-      label: "Map Profound category and persona",
-      href: `${base}/profound/mapping`,
-      done: counts.profoundLinks > 0 || counts.syncJobs > 0,
-      detail: counts.syncJobs > 0 ? "mapping configured" : "not configured",
+      label: "Map Profound category",
+      href: `${base}/profound/export`,
+      done: counts.categoryMapped > 0,
+      detail: counts.categoryMapped > 0 ? "mapping configured" : "not configured",
     },
     {
-      key: "deploy",
-      label: "Dry run, approve and deploy",
-      href: `${base}/profound/deployments`,
+      key: "export",
+      label: "Export prompts and reconcile with Profound",
+      href: `${base}/profound/export`,
       done: counts.profoundLinks > 0,
       detail: `${counts.profoundLinks} linked Profound prompt${counts.profoundLinks === 1 ? "" : "s"}`,
     },

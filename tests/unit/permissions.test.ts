@@ -34,17 +34,12 @@ describe("role capability matrix", () => {
     }
   });
 
-  it("reserves Profound deployment for admin and above", () => {
-    expect(can("viewer", "profound:deploy")).toBe(false);
-    expect(can("editor", "profound:deploy")).toBe(false);
-    expect(can("admin", "profound:deploy")).toBe(true);
-    expect(can("owner", "profound:deploy")).toBe(true);
-    expect(requiredRoleFor("profound:deploy")).toBe("admin");
-  });
-
-  it("lets an editor run a dry run but not the deployment itself", () => {
-    expect(can("editor", "profound:dry_run")).toBe(true);
-    expect(can("editor", "profound:deploy")).toBe(false);
+  it("reserves Profound configuration (category mapping, reconciliation) for admin and above", () => {
+    expect(can("viewer", "profound:configure")).toBe(false);
+    expect(can("editor", "profound:configure")).toBe(false);
+    expect(can("admin", "profound:configure")).toBe(true);
+    expect(can("owner", "profound:configure")).toBe(true);
+    expect(requiredRoleFor("profound:configure")).toBe("admin");
   });
 
   it("reserves credential management for admin and above", () => {
@@ -85,22 +80,22 @@ describe("requireCapability", () => {
   });
 
   it("throws ForbiddenError when it does not", () => {
-    expect(() => requireCapability(ctx, "profound:deploy")).toThrow(ForbiddenError);
+    expect(() => requireCapability(ctx, "profound:configure")).toThrow(ForbiddenError);
   });
 
   it("names the role and capability in the message so the UI can explain it", () => {
     try {
-      requireCapability(ctx, "profound:deploy");
+      requireCapability(ctx, "profound:configure");
       expect.unreachable("should have thrown");
     } catch (error) {
       expect((error as Error).message).toContain("editor");
-      expect((error as Error).message).toContain("profound:deploy");
+      expect((error as Error).message).toContain("profound:configure");
     }
   });
 
   it("hasCapability mirrors requireCapability without throwing", () => {
     expect(hasCapability(ctx, "persona:approve")).toBe(true);
-    expect(hasCapability(ctx, "profound:deploy")).toBe(false);
+    expect(hasCapability(ctx, "profound:configure")).toBe(false);
   });
 });
 

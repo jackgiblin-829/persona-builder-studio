@@ -210,6 +210,22 @@ export const promptGenerationSchema = z.object({
 export type PromptGeneration = z.infer<typeof promptGenerationSchema>;
 export type GeneratedPrompt = z.infer<typeof generatedPromptSchema>;
 
+// ── Deep web research planning ──────────────────────────────────────────────
+
+export const webResearchPlanSchema = z.object({
+  queries: z
+    .array(
+      z.object({
+        query: z.string().min(5).max(200),
+        rationale: z.string().min(5).max(300),
+      }),
+    )
+    .min(1)
+    .max(6),
+});
+
+export type WebResearchPlan = z.infer<typeof webResearchPlanSchema>;
+
 // ── Content gap / opportunities ─────────────────────────────────────────────
 
 export const RECOMMENDATION_TYPES = [
@@ -334,6 +350,8 @@ export const auditFindingSchema = z.object({
   /** Distinguishes homepage requirements from supporting-page content. */
   belongs_on_supporting_page: z.boolean(),
 });
+
+export type AuditFindingOutput = z.infer<typeof auditFindingSchema>;
 
 export const pageAuditSchema = z.object({
   summary: z.string().min(20).max(2000),

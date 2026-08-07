@@ -18,7 +18,7 @@ import { CONFIDENCE_RUBRIC, PERSONA_SYNTHESIS, renderTemplate } from "@/prompts/
 import { personaSynthesisSchema, SCHEMA_VERSION } from "@/prompts/schemas";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
 import { FIELD_TYPE_ORDER, recomputeVersionConfidence } from "@/services/personas";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 import { loadBrandContext } from "./ingest-source";
 
@@ -112,70 +112,72 @@ registerJob(JOB_TYPES.generatePersona, async ({ job }) => {
 
   const { adapter, mode } = await getOpenAIAdapter(brand.organizationId);
   const jsonSchema = toStrictJsonSchema(personaSynthesisSchema, "PersonaSynthesis");
-  const started = Date.now();
 
-  const result = await adapter.generateStructured({
-    templateId: PERSONA_SYNTHESIS.id,
-    templateVersion: PERSONA_SYNTHESIS.version,
-    schemaVersion: SCHEMA_VERSION,
-    system: PERSONA_SYNTHESIS.system,
-    user: renderTemplate(PERSONA_SYNTHESIS, {
-      brand_context: [
-        `Brand: ${brand.name} (${brand.canonicalDomain})`,
-        `Description: ${brand.description}`,
-        brand.regulatedDomain
-          ? "This brand operates in a regulated domain: never infer health, financial or other sensitive attributes."
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      segment_candidate: [
-        `Label: ${segment.label}`,
-        `Definition: ${segment.definition}`,
-        `Distinguishing variables: ${segment.distinguishingVariables.join("; ")}`,
-        `Why it changes prompts: ${segment.whyItChangesPrompts}`,
-        segment.coverageGaps.length > 0
-          ? `Known coverage gaps: ${segment.coverageGaps.join(" | ")}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      first_party_evidence: renderEvidence(supporting),
-      sparktoro_evidence: "",
-      dataforseo_evidence: "",
-      other_personas: otherPersonas.length > 0 ? otherPersonas.map((p) => p.name).join(", ") : "",
-      confidence_rubric: CONFIDENCE_RUBRIC,
-    }),
-    schema: personaSynthesisSchema,
-    schemaName: "PersonaSynthesis",
-    jsonSchema,
-    modelTier: PERSONA_SYNTHESIS.modelTier,
-    mockContext: {
-      brandName: brand.name,
-      segmentLabel: segment.label,
-      segmentDefinition: segment.definition,
-      segmentDistinguishingVariables: segment.distinguishingVariables,
-      segmentCoverageGaps: segment.coverageGaps,
-      otherPersonaNames: otherPersonas.map((p) => p.name),
-      supporting: supporting.map(toMockEvidence),
-      contradicting: contradicting.map(toMockEvidence),
+  const result = await withVendorUsage(
+    {
+      organizationId: brand.organizationId,
+      brandId,
+      vendor: "openai",
+      operation: "persona_synthesis",
+      mode,
+      jobId: job.id,
     },
-  });
-
-  await recordVendorUsage({
-    organizationId: brand.organizationId,
-    brandId,
-    vendor: "openai",
-    operation: "persona_synthesis",
-    mode,
-    jobId: job.id,
-    durationMs: Date.now() - started,
-    retryCount: result.attempts - 1,
-    outcome: "success",
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
-    costCents: result.costCents,
-  });
+    () =>
+      adapter.generateStructured({
+        templateId: PERSONA_SYNTHESIS.id,
+        templateVersion: PERSONA_SYNTHESIS.version,
+        schemaVersion: SCHEMA_VERSION,
+        system: PERSONA_SYNTHESIS.system,
+        user: renderTemplate(PERSONA_SYNTHESIS, {
+          brand_context: [
+            `Brand: ${brand.name} (${brand.canonicalDomain})`,
+            `Description: ${brand.description}`,
+            brand.regulatedDomain
+              ? "This brand operates in a regulated domain: never infer health, financial or other sensitive attributes."
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          segment_candidate: [
+            `Label: ${segment.label}`,
+            `Definition: ${segment.definition}`,
+            `Distinguishing variables: ${segment.distinguishingVariables.join("; ")}`,
+            `Why it changes prompts: ${segment.whyItChangesPrompts}`,
+            segment.coverageGaps.length > 0
+              ? `Known coverage gaps: ${segment.coverageGaps.join(" | ")}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          first_party_evidence: renderEvidence(supporting),
+          sparktoro_evidence: "",
+          dataforseo_evidence: "",
+          other_personas:
+            otherPersonas.length > 0 ? otherPersonas.map((p) => p.name).join(", ") : "",
+          confidence_rubric: CONFIDENCE_RUBRIC,
+        }),
+        schema: personaSynthesisSchema,
+        schemaName: "PersonaSynthesis",
+        jsonSchema,
+        modelTier: PERSONA_SYNTHESIS.modelTier,
+        mockContext: {
+          brandName: brand.name,
+          segmentLabel: segment.label,
+          segmentDefinition: segment.definition,
+          segmentDistinguishingVariables: segment.distinguishingVariables,
+          segmentCoverageGaps: segment.coverageGaps,
+          otherPersonaNames: otherPersonas.map((p) => p.name),
+          supporting: supporting.map(toMockEvidence),
+          contradicting: contradicting.map(toMockEvidence),
+        },
+      }),
+    (synthesisResult) => ({
+      retryCount: synthesisResult.attempts - 1,
+      tokensIn: synthesisResult.tokensIn,
+      tokensOut: synthesisResult.tokensOut,
+      costCents: synthesisResult.costCents,
+    }),
+  );
 
   const synthesis = result.data;
 

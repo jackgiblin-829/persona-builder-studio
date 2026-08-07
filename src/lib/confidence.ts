@@ -65,6 +65,8 @@ export const SOURCE_WEIGHTS: Record<string, number> = {
   community: 0.8,
   sparktoro: 0.7,
   dataforseo: 0.65,
+  profound: 0.75,
+  web_research: 0.6,
   brand_page: 0.4,
   documentation: 0.4,
   other: 0.5,
@@ -128,6 +130,8 @@ const EXTERNAL_SOURCE_TYPES = new Set([
   "onsite_search",
   "sparktoro",
   "dataforseo",
+  "profound",
+  "web_research",
 ]);
 
 export function isExternalSupport(evidence: ConfidenceEvidence): boolean {

@@ -119,6 +119,9 @@ export const sourceTypeEnum = pgEnum("source_type", [
   "crm_note",
   "brand_page",
   "documentation",
+  "sparktoro",
+  "profound",
+  "web_research",
   "other",
 ]);
 
@@ -128,10 +131,14 @@ export const sourceSystemEnum = pgEnum("source_system", [
   "uploaded_txt",
   "uploaded_markdown",
   "uploaded_docx",
+  "uploaded_pdf",
   "pasted_text",
   "transcript_text",
   "search_console_export",
   "url_crawl",
+  "sparktoro_report",
+  "profound_report",
+  "openai_web_search",
 ]);
 
 export const jobStatusEnum = pgEnum("job_status", [

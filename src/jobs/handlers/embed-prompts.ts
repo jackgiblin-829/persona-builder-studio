@@ -6,7 +6,7 @@ import { getOpenAIAdapter } from "@/adapters/openai";
 import { AppError } from "@/lib/errors";
 import { newId, ID_PREFIXES } from "@/lib/ids";
 import { findDuplicate, type DuplicateCandidate } from "@/lib/prompt-dedupe";
-import { recordVendorUsage } from "@/services/usage";
+import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 
 const BATCH_SIZE = 64;
@@ -65,55 +65,41 @@ registerJob(JOB_TYPES.embedPrompts, async ({ job }) => {
 
   for (let i = 0; i < toEmbed.length; i += BATCH_SIZE) {
     const batch = toEmbed.slice(i, i + BATCH_SIZE);
-    const started = Date.now();
-    try {
-      const result = await adapter.embed({ texts: batch.map((row) => row.text) });
-
-      await recordVendorUsage({
+    const result = await withVendorUsage(
+      {
         organizationId: version.organizationId,
         brandId: version.brandId,
         vendor: "openai",
         operation: "embed_prompts",
         mode,
         jobId: job.id,
-        durationMs: Date.now() - started,
-        retryCount: 0,
-        outcome: "success",
-        tokensIn: result.tokensIn,
-        costCents: result.costCents,
-      });
+      },
+      () => adapter.embed({ texts: batch.map((row) => row.text) }),
+      (embedResult) => ({ tokensIn: embedResult.tokensIn, costCents: embedResult.costCents }),
+      { swallow: true },
+    );
 
-      for (let j = 0; j < batch.length; j++) {
-        const row = batch[j]!;
-        const embedding = result.embeddings[j];
-        if (!embedding) continue;
-        await db
-          .insert(promptEmbeddings)
-          .values({
-            id: newId(ID_PREFIXES.evidenceEmbedding),
-            organizationId: version.organizationId,
-            promptId: row.id,
-            modelId: result.modelId,
-            dataOrigin: result.dataOrigin,
-            embedding,
-          })
-          .onConflictDoNothing();
-        embedded++;
-      }
-    } catch (error) {
+    if (!result) {
       failedBatches++;
-      await recordVendorUsage({
-        organizationId: version.organizationId,
-        brandId: version.brandId,
-        vendor: "openai",
-        operation: "embed_prompts",
-        mode,
-        jobId: job.id,
-        durationMs: Date.now() - started,
-        retryCount: 0,
-        outcome: "failure",
-        errorCode: error instanceof Error ? error.name : "unknown",
-      });
+      continue;
+    }
+
+    for (let j = 0; j < batch.length; j++) {
+      const row = batch[j]!;
+      const embedding = result.embeddings[j];
+      if (!embedding) continue;
+      await db
+        .insert(promptEmbeddings)
+        .values({
+          id: newId(ID_PREFIXES.evidenceEmbedding),
+          organizationId: version.organizationId,
+          promptId: row.id,
+          modelId: result.modelId,
+          dataOrigin: result.dataOrigin,
+          embedding,
+        })
+        .onConflictDoNothing();
+      embedded++;
     }
   }
 

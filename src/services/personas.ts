@@ -429,7 +429,13 @@ async function userName(userId: string): Promise<string | null> {
   return row?.name ?? null;
 }
 
-async function loadFieldsWithEvidence(
+/**
+ * Exported for milestone 7's content workflows (`content-opportunities.ts`,
+ * `content-brief.ts`, `page-audit.ts`): they need the same
+ * field-plus-available-evidence assembly this module already does for the
+ * persona detail screen, rather than a second query shape to keep in sync.
+ */
+export async function loadFieldsWithEvidence(
   personaVersionId: string,
   executor: Executor = db,
 ): Promise<PersonaFieldWithEvidence[]> {
@@ -1544,6 +1550,30 @@ function snapshot(field: typeof personaFields.$inferSelect) {
 
 function normalizeStatement(statement: string): string {
   return statement.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Approved persona versions for the brand — the picker milestone 7's content
+ * workflows (opportunities, briefs, page audits) all need, since every one of
+ * them requires an approved version rather than a persona's current draft.
+ */
+export async function listApprovedPersonaVersions(
+  ctx: BrandContext,
+): Promise<
+  { personaId: string; personaName: string; personaVersionId: string; version: number }[]
+> {
+  const rows = await db
+    .select({
+      personaId: personas.id,
+      personaName: personas.name,
+      personaVersionId: personaVersions.id,
+      version: personaVersions.version,
+    })
+    .from(personas)
+    .innerJoin(personaVersions, eq(personaVersions.id, personas.approvedVersionId))
+    .where(and(eq(personas.organizationId, ctx.organizationId), eq(personas.brandId, ctx.brandId)))
+    .orderBy(asc(personas.name));
+  return rows;
 }
 
 /**

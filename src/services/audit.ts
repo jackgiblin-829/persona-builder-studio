@@ -31,6 +31,8 @@ export type AuditAction =
   | "prompt.pair"
   | "integration.update"
   | "credential.update"
+  | "profound.connection_test"
+  | "profound.config_refresh"
   | "profound.mapping_update"
   | "profound.dry_run"
   | "profound.deploy_approve"
@@ -44,7 +46,12 @@ export type AuditAction =
   | "audit.generate"
   | "audit.approve"
   | "export"
-  | "evaluation.run";
+  | "evaluation.run"
+  | "audience_report.request"
+  | "profound.evidence_pull"
+  | "web_research.run"
+  | "profound.reconcile"
+  | "profound.link_manual";
 
 export type AuditEntry = {
   organizationId?: string | null;

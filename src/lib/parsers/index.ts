@@ -31,6 +31,7 @@ export type SupportedFormat =
   | "txt"
   | "markdown"
   | "docx"
+  | "pdf"
   | "pasted_text"
   | "transcript"
   | "search_console_csv";
@@ -42,11 +43,13 @@ export function detectFormat(filename: string, contentType: string | null): Supp
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".txt")) return "txt";
   if (lower.endsWith(".docx")) return "docx";
+  if (lower.endsWith(".pdf")) return "pdf";
   if (contentType?.includes("csv")) return "csv";
   if (contentType?.includes("json")) return "json";
   if (contentType?.includes("markdown")) return "markdown";
   if (contentType?.includes("text/plain")) return "txt";
   if (contentType?.includes("wordprocessingml")) return "docx";
+  if (contentType?.includes("pdf")) return "pdf";
   return null;
 }
 
@@ -59,6 +62,16 @@ export function verifyMagicBytes(format: SupportedFormat, buffer: Buffer): void 
     const isZip = buffer.length > 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
     if (!isZip)
       throw new ValidationError("This file is not a valid .docx (expected a ZIP container).");
+    return;
+  }
+  if (format === "pdf") {
+    const isPdf =
+      buffer.length > 4 &&
+      buffer[0] === 0x25 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x44 &&
+      buffer[3] === 0x46;
+    if (!isPdf) throw new ValidationError("This file is not a valid PDF (expected a %PDF header).");
     return;
   }
   // Reject files that begin with a known binary signature but claim to be text.
@@ -398,6 +411,53 @@ export async function parseDocx(buffer: Buffer, label: string): Promise<ParseRes
     return { documents: transcript.documents, warnings };
   }
   return { documents: [{ title: label, location: "full document", text, metadata: {} }], warnings };
+}
+
+// ── PDF ─────────────────────────────────────────────────────────────────────
+
+export async function parsePdf(buffer: Buffer, label: string): Promise<ParseResult> {
+  const pdfParse = (await import("pdf-parse")).default;
+  const pages: string[] = [];
+  const result = await pdfParse(buffer, {
+    pagerender: async (pageData) => {
+      const textContent = await pageData.getTextContent();
+      const text = textContent.items.map((item: { str: string }) => item.str).join(" ");
+      pages.push(text);
+      return text;
+    },
+  });
+
+  const nonEmptyPages = pages.map((text) => text.trim()).filter((text) => text.length > 0);
+  if (nonEmptyPages.length === 0) {
+    const fallback = result.text.trim();
+    if (fallback.length < 10) throw new ValidationError("This PDF contains no extractable text.");
+    return {
+      documents: [{ title: label, location: "full document", text: fallback, metadata: {} }],
+      warnings: [],
+    };
+  }
+
+  if (nonEmptyPages.length === 1) {
+    return {
+      documents: [
+        {
+          title: label,
+          location: "full document",
+          text: nonEmptyPages[0]!,
+          metadata: { pages: 1 },
+        },
+      ],
+      warnings: [],
+    };
+  }
+
+  const documents: ParsedDocument[] = nonEmptyPages.map((text, index) => ({
+    title: label,
+    location: `page ${index + 1}`,
+    text,
+    metadata: { page: index + 1, totalPages: nonEmptyPages.length },
+  }));
+  return { documents, warnings: [] };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
