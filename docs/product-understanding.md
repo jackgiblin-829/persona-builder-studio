@@ -1,12 +1,12 @@
-# Product understanding — Persona Evidence Studio
+# Product understanding — Persona Builder Studio
 
 _Last updated: 2026-08-06. Source of truth: `1. Product purpose.md` (build spec) and `deep-research-report.md` (research basis)._
 
 ## 1. What this product is
 
-Persona Evidence Studio (PES) is an **evidence-backed persona and prompt strategy layer that sits in front of Profound**.
+Persona Builder Studio (PBS) is an **evidence-backed persona and prompt strategy layer that sits in front of Profound**.
 
-It exists because tracking one generic prompt ("what are the best analytics platforms?") is an inadequate measure of AI visibility. Different buyers — a security-led technical evaluator, an adoption-led functional manager, a cost-constrained small-team buyer — ask materially different questions, apply different decision criteria, and require different proof. PES makes that difference explicit, traceable to real evidence, and measurable in Profound.
+It exists because tracking one generic prompt ("what are the best analytics platforms?") is an inadequate measure of AI visibility. Different buyers — a security-led technical evaluator, an adoption-led functional manager, a cost-constrained small-team buyer — ask materially different questions, apply different decision criteria, and require different proof. PBS makes that difference explicit, traceable to real evidence, and measurable in Profound.
 
 The product's job, in one sentence:
 
@@ -14,7 +14,7 @@ The product's job, in one sentence:
 
 ## 2. What this product is *not*
 
-- **Not an AI-visibility platform.** Profound executes prompts and reports visibility. PES never executes prompts against ChatGPT/Claude/Gemini/Perplexity itself, and never re-implements Profound's dashboard.
+- **Not an AI-visibility platform.** Profound executes prompts and reports visibility. PBS never executes prompts against ChatGPT/Claude/Gemini/Perplexity itself, and never re-implements Profound's dashboard.
 - **Not a persona generator.** A persona here is a *testable research hypothesis*, not a person, a digital twin, or a decorative card with a stock photo and a coffee order.
 - **Not an autonomous system.** Nothing reaches Profound without a dry run and an explicit human approval. Nothing is published anywhere.
 
@@ -22,7 +22,7 @@ The product's job, in one sentence:
 
 This boundary is the single most important architectural constraint in the product.
 
-| Profound owns | Persona Evidence Studio owns |
+| Profound owns | Persona Builder Studio owns |
 | --- | --- |
 | Prompt execution | Source evidence and evidence classifications |
 | AI visibility, share of voice, mentions | Candidate segments |

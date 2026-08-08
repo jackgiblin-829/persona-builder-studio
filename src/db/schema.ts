@@ -1,5 +1,5 @@
 /**
- * Persona Evidence Studio — database schema.
+ * Persona Builder Studio — database schema.
  *
  * Single source of truth for the data model. See docs/data-model.md.
  *

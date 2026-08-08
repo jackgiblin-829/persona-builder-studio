@@ -256,7 +256,7 @@ describe("prompt generation", () => {
     expect(tags).toContain(`persona:${detail.persona.slug}`);
     expect(tags).toContain(`prompt-set:${detail.set.slug}`);
     expect(tags).toContain("prompt-type:persona");
-    expect(tags).toContain("source:persona-evidence-studio");
+    expect(tags).toContain("source:persona-builder-studio");
 
     const control = detail.controls[0];
     if (control) {

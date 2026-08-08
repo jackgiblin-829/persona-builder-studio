@@ -34,7 +34,7 @@ export const logger = pino({
     ],
     censor: "[redacted]",
   },
-  base: { service: "persona-evidence-studio" },
+  base: { service: "persona-builder-studio" },
   transport:
     env.NODE_ENV === "development" && !env.isTest
       ? { target: "pino/file", options: { destination: 1 } }

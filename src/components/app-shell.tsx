@@ -64,7 +64,7 @@ export function AppShell({
       <header className="border-b border-surface-border bg-surface">
         <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-3 px-4 py-2.5">
           <Link href="/" className="text-sm font-semibold tracking-tight">
-            Persona Evidence Studio
+            Persona Builder Studio
           </Link>
 
           <OrgSwitcher session={session} currentOrganizationId={organizationId} />

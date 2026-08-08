@@ -45,7 +45,7 @@ export function buildPromptTags(input: PromptTagInput): string[] {
     `prompt-set:${slugify(input.promptSetSlug)}`,
     `prompt-set-version:${input.promptSetVersion}`,
     `prompt-type:${input.promptType === "generic_control" ? "generic-control" : "persona"}`,
-    "source:persona-evidence-studio",
+    "source:persona-builder-studio",
   ];
 
   // A duplicate tag is not an error worth failing on, but it is noise in the

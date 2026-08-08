@@ -27,7 +27,7 @@ describe("buildPromptTags", () => {
       "prompt-set:security-led-deployment-buyer-prompts",
       "prompt-set-version:1",
       "prompt-type:persona",
-      "source:persona-evidence-studio",
+      "source:persona-builder-studio",
     ]);
   });
 
@@ -62,7 +62,7 @@ describe("buildControlTags", () => {
   it("still carries the prompt-type and source tags", () => {
     const tags = buildControlTags(BASE);
     expect(tags).toContain("prompt-type:generic-control");
-    expect(tags).toContain("source:persona-evidence-studio");
+    expect(tags).toContain("source:persona-builder-studio");
   });
 
   it("keeps the persona-version tag so a control pairs to the right persona revision", () => {
@@ -120,8 +120,8 @@ describe("buildPromptMetadata", () => {
   });
 
   it("does not smuggle internal fields into the vendor payload", () => {
-    // Checked on the keys, not the serialised blob: the `source:
-    // persona-evidence-studio` tag legitimately contains the word "evidence".
+    // Checked on the keys, not the serialised blob: a substring scan of the
+    // full payload could false-positive on unrelated text inside a tag value.
     expect(Object.keys(buildPromptMetadata(input)).sort()).toEqual([
       "analysis_types",
       "asset",

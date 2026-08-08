@@ -15,7 +15,7 @@ export default async function SignInPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold tracking-tight">Persona Evidence Studio</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Persona Builder Studio</h1>
         <p className="mt-1 text-sm text-ink-muted">
           Evidence-backed personas and prompt strategy for Profound.
         </p>

@@ -1,4 +1,4 @@
-# Persona Evidence Studio
+# Persona Builder Studio
 
 An **evidence-backed persona and prompt strategy layer for [Profound](https://tryprofound.com)**.
 
@@ -74,7 +74,7 @@ git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tm
 Then create the databases:
 
 ```bash
-createdb persona_evidence_studio && createdb persona_evidence_studio_test
+createdb persona_builder_studio && createdb persona_builder_studio_test
 ```
 
 ### Option B — Docker Compose
@@ -83,7 +83,7 @@ createdb persona_evidence_studio && createdb persona_evidence_studio_test
 docker compose up -d
 ```
 
-Then set `DATABASE_URL=postgresql://pes:pes@localhost:5433/persona_evidence_studio` in `.env`.
+Then set `DATABASE_URL=postgresql://pbs:pbs@localhost:5433/persona_builder_studio` in `.env`.
 
 ### Setup
 

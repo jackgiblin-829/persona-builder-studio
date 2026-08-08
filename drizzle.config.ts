@@ -8,7 +8,7 @@ export default {
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgresql://localhost:5432/persona_evidence_studio",
+    url: process.env.DATABASE_URL ?? "postgresql://localhost:5432/persona_builder_studio",
   },
   strict: true,
   verbose: true,
