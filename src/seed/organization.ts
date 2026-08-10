@@ -54,8 +54,8 @@ export async function seedOrganizationAndBrand(): Promise<SeededOrg> {
   const organizationId = newId(ID_PREFIXES.organization);
   await db.insert(organizations).values({
     id: organizationId,
-    name: "Meridian Growth Studio",
-    slug: "meridian-growth-studio",
+    name: "829 Studios",
+    slug: "829-studios",
     retentionDays: null,
   });
 
