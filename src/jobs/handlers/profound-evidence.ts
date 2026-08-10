@@ -51,7 +51,16 @@ registerJob(JOB_TYPES.profoundEvidence, async ({ job }) => {
   }
 
   const { adapter, mode } = await getProfoundAdapter(brand.organizationId);
-  const query = { categoryId: categoryRow.profoundCategoryId, startDate, endDate };
+  // `asset` is required by `queryAccountSentiment` specifically (the brand
+  // name being analyzed) — included on every call here, the same way
+  // `src/jobs/handlers/profound-results.ts` does, rather than only on the
+  // sentiment call, since it is harmless for the other two.
+  const query = {
+    categoryId: categoryRow.profoundCategoryId,
+    startDate,
+    endDate,
+    asset: brand.canonicalDomain,
+  };
 
   const [visibility, citations, sentiment]: [
     ProfoundAccountVisibilityRow[],
@@ -173,11 +182,10 @@ function documentifyTopic(
   if (visibility.length > 0) {
     const avgVisibility = average(visibility.map((row) => row.visibilityScore));
     const avgShare = average(visibility.map((row) => row.shareOfVoice));
-    const totalMentions = visibility.reduce((sum, row) => sum + row.mentionCount, 0);
     parts.push(
       `For the topic "${topic}" between ${startDate} and ${endDate}, this brand's AI-visibility ` +
-        `score averaged ${formatPercent(avgVisibility)} with an average share of voice of ` +
-        `${formatPercent(avgShare)} across ${totalMentions} mention(s).`,
+        `score across search queries on this topic averaged ${formatPercent(avgVisibility)}, ` +
+        `with an average share of voice of ${formatPercent(avgShare)}.`,
     );
   }
 
@@ -191,13 +199,20 @@ function documentifyTopic(
     );
   }
 
-  const themes = [
-    ...new Set(
-      sentiment.flatMap((row) => row.sentimentThemes.map((t) => `${t.theme} (${t.sentiment})`)),
-    ),
-  ].slice(0, 8);
-  if (themes.length > 0) {
-    parts.push(`Recurring themes in AI answers about this topic: ${themes.join(", ")}.`);
+  const positiveValues = sentiment
+    .map((row) => row.positiveSentiment)
+    .filter((v): v is number => v != null);
+  const negativeValues = sentiment
+    .map((row) => row.negativeSentiment)
+    .filter((v): v is number => v != null);
+  if (positiveValues.length > 0 || negativeValues.length > 0) {
+    const avgPositive = average(positiveValues);
+    const avgNegative = average(negativeValues);
+    parts.push(
+      `Sentiment in AI answers about this topic averaged ` +
+        `${avgPositive != null ? `${avgPositive.toFixed(1)}%` : "unavailable"} positive and ` +
+        `${avgNegative != null ? `${avgNegative.toFixed(1)}%` : "unavailable"} negative.`,
+    );
   }
 
   return parts.length > 0 ? parts.join(" ") : null;

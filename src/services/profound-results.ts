@@ -4,19 +4,20 @@ import { db } from "@/db/client";
 import {
   personas,
   profoundPromptLinks,
-  profoundResultSnapshots,
+  profoundResultBuckets,
+  promptAnswerCoverageEstimates,
   promptPairs,
   prompts,
 } from "@/db/schema";
 import { getQueue } from "@/adapters/queue";
 import { JOB_TYPES } from "@/jobs/registry";
 import { requireCapability, type BrandContext } from "@/lib/auth/context";
+import { hashExpectedElements } from "@/lib/answer-coverage";
 import { NotFoundError, ValidationError } from "@/lib/errors";
 import {
   aggregateMetrics,
   classifyResult,
   compareControl,
-  detectMissingElements,
   type AggregatedMetrics,
   type ControlComparison,
   type ResultClassification,
@@ -26,10 +27,25 @@ import { recordAudit } from "./audit";
 import { listPromptLinks } from "./profound-links";
 
 /**
- * Reads over `profound_result_snapshots` (§25): retrieval triggering, the
- * persona performance panel, persona-vs-control comparison, and single-prompt
- * raw-answer inspection. The job that actually writes snapshots is
+ * Reads over `profound_result_buckets` (§25, redesigned 2026-08-10): retrieval
+ * triggering, the persona performance panel, persona-vs-control comparison,
+ * and single-prompt bucket inspection. The job that actually writes buckets is
  * `src/jobs/handlers/profound-results.ts`; this file only reads and enqueues.
+ *
+ * Two things follow from the redesign:
+ *
+ * - There is no vendor concept of a mention count, brand-mentioned flag or
+ *   per-execution "run" — classification reads only real vendor fields
+ *   (`visibilityScore`, and a competitor's `shareOfVoice` in the same bucket
+ *   when competitor asset scope was requested), via `classifyResult`.
+ * - "Missing expected answer elements" no longer comes from a substring match
+ *   against a Profound raw answer (the vendor has none). It is read from
+ *   `prompt_answer_coverage_estimates`, this product's own self-computed,
+ *   `dataOrigin: "local"` estimate (see
+ *   `src/jobs/handlers/estimate-answer-coverage.ts`). A prompt whose expected
+ *   elements changed since its last estimate, or that has no estimate at all
+ *   yet, honestly reports no missing elements here rather than serving a
+ *   stale or fabricated one.
  */
 
 const MAX_RANGE_DAYS = 92;
@@ -60,34 +76,82 @@ function dateBounds(startDate: string, endDate: string) {
   };
 }
 
-type SnapshotRow = typeof profoundResultSnapshots.$inferSelect;
+type BucketRow = typeof profoundResultBuckets.$inferSelect;
 
-function toMetrics(row: SnapshotRow): SnapshotMetrics {
+function toMetrics(row: BucketRow): SnapshotMetrics {
   return {
     visibilityScore: row.visibilityScore,
     shareOfVoice: row.shareOfVoice,
-    mentionCount: row.mentionCount,
-    executions: row.executions,
     citationCount: row.citationCount,
     citationShare: row.citationShare,
     averagePosition: row.averagePosition,
   };
 }
 
-function asMentions(value: Record<string, unknown>[]): { entity: string; share: number }[] {
-  return value.map((row) => ({
-    entity: typeof row.entity === "string" ? row.entity : "",
-    share: typeof row.share === "number" ? row.share : 0,
-  }));
+/**
+ * The strongest sibling competitor-asset row's share of voice in the same
+ * bucket as `row`, or `null` when no competitor row exists for that bucket.
+ * Retrieval does not currently request competitor asset scope (see
+ * `src/jobs/handlers/profound-results.ts`), so this resolves to `null` in
+ * practice today — the lookup stays correct rather than hardcoded, so it
+ * starts working the moment competitor asset scope is ever requested.
+ */
+function competitorShareOfVoiceForBucket(row: BucketRow, allRows: BucketRow[]): number | null {
+  const competitorRows = allRows.filter(
+    (r) =>
+      r.assetOwned === false &&
+      r.profoundPromptId === row.profoundPromptId &&
+      r.bucketDate.getTime() === row.bucketDate.getTime() &&
+      r.modelId === row.modelId &&
+      r.topicId === row.topicId &&
+      r.regionId === row.regionId &&
+      r.personaId === row.personaId,
+  );
+  if (competitorRows.length === 0) return null;
+  return competitorRows.reduce((max, r) => Math.max(max, r.shareOfVoice ?? 0), 0);
 }
 
-function classifySnapshot(row: SnapshotRow): ResultClassification {
+function classifyBucket(
+  row: BucketRow,
+  allRows: BucketRow[],
+): { classification: ResultClassification; competitorVisible: boolean | null } {
   return classifyResult({
-    brandMentioned: row.brandMentioned ?? false,
-    mentionCount: row.mentionCount ?? 0,
+    visibilityScore: row.visibilityScore,
     shareOfVoice: row.shareOfVoice,
-    mentions: asMentions(row.mentions),
+    competitorShareOfVoice: competitorShareOfVoiceForBucket(row, allRows),
   });
+}
+
+type CoverageEstimateRow = typeof promptAnswerCoverageEstimates.$inferSelect;
+
+/**
+ * Loads only the coverage estimate that matches each prompt's *current*
+ * expected-answer-elements hash — an estimate computed before the prompt was
+ * last edited is never surfaced as current, and a prompt with no matching
+ * estimate yet is simply absent from the returned map (never a stale or
+ * fabricated stand-in).
+ */
+async function loadCurrentCoverageEstimates(
+  promptRows: { id: string; expectedAnswerElements: string[] }[],
+): Promise<Map<string, CoverageEstimateRow>> {
+  if (promptRows.length === 0) return new Map();
+  const rows = await db
+    .select()
+    .from(promptAnswerCoverageEstimates)
+    .where(
+      inArray(
+        promptAnswerCoverageEstimates.promptId,
+        promptRows.map((p) => p.id),
+      ),
+    );
+  const byKey = new Map(rows.map((r) => [`${r.promptId}::${r.expectedElementsHash}`, r]));
+  const current = new Map<string, CoverageEstimateRow>();
+  for (const prompt of promptRows) {
+    const hash = hashExpectedElements(prompt.expectedAnswerElements);
+    const estimate = byKey.get(`${prompt.id}::${hash}`);
+    if (estimate) current.set(prompt.id, estimate);
+  }
+  return current;
 }
 
 // ── Retrieval trigger ────────────────────────────────────────────────────────
@@ -155,8 +219,11 @@ export type PromptPerformanceRow = {
   personaId: string;
   personaName: string;
   profoundPromptId: string;
-  /** From the most recent run in range — "how does this look right now". */
+  /** From the most recent bucket in range — "how does this look right now". */
   classification: ResultClassification;
+  /** Null when competitor asset scope wasn't part of this bucket's retrieval — not measured, never "no competitor visible". */
+  competitorVisible: boolean | null;
+  /** From this product's own self-computed estimate (`dataOrigin: "local"`), not from Profound. Empty when no current estimate exists yet. */
   missingElements: string[];
   metrics: AggregatedMetrics;
 };
@@ -171,7 +238,8 @@ export type PersonaPerformanceGroup = {
 export type PerformancePanel = {
   overall: AggregatedMetrics;
   brandAbsentCount: number;
-  competitorDominatedCount: number;
+  /** Count where a competitor was actually measured as more visible — never includes "not measured" prompts. */
+  competitorVisibleCount: number;
   missingElementsCount: number;
   personas: PersonaPerformanceGroup[];
 };
@@ -184,20 +252,20 @@ export async function getPerformancePanel(
   const { start, end } = dateBounds(filters.startDate, filters.endDate);
 
   const conditions = [
-    eq(profoundResultSnapshots.organizationId, ctx.organizationId),
-    eq(profoundResultSnapshots.brandId, ctx.brandId),
-    gte(profoundResultSnapshots.runDate, start),
-    lte(profoundResultSnapshots.runDate, end),
+    eq(profoundResultBuckets.organizationId, ctx.organizationId),
+    eq(profoundResultBuckets.brandId, ctx.brandId),
+    gte(profoundResultBuckets.bucketDate, start),
+    lte(profoundResultBuckets.bucketDate, end),
   ];
-  if (filters.modelId) conditions.push(eq(profoundResultSnapshots.modelId, filters.modelId));
-  if (filters.region) conditions.push(eq(profoundResultSnapshots.region, filters.region));
+  if (filters.modelId) conditions.push(eq(profoundResultBuckets.modelId, filters.modelId));
+  if (filters.region) conditions.push(eq(profoundResultBuckets.region, filters.region));
   if (filters.personaVersionId) {
     conditions.push(eq(prompts.personaVersionId, filters.personaVersionId));
   }
 
   const rows = await db
     .select({
-      snapshot: profoundResultSnapshots,
+      bucket: profoundResultBuckets,
       promptId: prompts.id,
       promptType: prompts.promptType,
       promptText: prompts.promptText,
@@ -206,13 +274,13 @@ export async function getPerformancePanel(
       personaId: personas.id,
       personaName: personas.name,
     })
-    .from(profoundResultSnapshots)
-    .innerJoin(prompts, eq(prompts.id, profoundResultSnapshots.promptId))
+    .from(profoundResultBuckets)
+    .innerJoin(prompts, eq(prompts.id, profoundResultBuckets.promptId))
     .innerJoin(personas, eq(personas.id, prompts.personaId))
     .where(and(...conditions))
-    .orderBy(desc(profoundResultSnapshots.runDate));
+    .orderBy(desc(profoundResultBuckets.bucketDate));
 
-  type PromptBucket = {
+  type PromptBucketGroup = {
     promptType: "persona" | "generic_control";
     promptText: string;
     topic: string;
@@ -220,81 +288,88 @@ export async function getPerformancePanel(
     personaId: string;
     personaName: string;
     profoundPromptId: string;
-    snapshots: SnapshotRow[];
+    buckets: BucketRow[];
   };
 
-  const byPrompt = new Map<string, PromptBucket>();
+  const byPrompt = new Map<string, PromptBucketGroup>();
+  const allBucketRows: BucketRow[] = [];
   for (const row of rows) {
-    let bucket = byPrompt.get(row.promptId);
-    if (!bucket) {
-      bucket = {
+    allBucketRows.push(row.bucket);
+    let group = byPrompt.get(row.promptId);
+    if (!group) {
+      group = {
         promptType: row.promptType,
         promptText: row.promptText,
         topic: row.topic,
         expectedAnswerElements: row.expectedAnswerElements,
         personaId: row.personaId,
         personaName: row.personaName,
-        profoundPromptId: row.snapshot.profoundPromptId,
-        snapshots: [],
+        profoundPromptId: row.bucket.profoundPromptId,
+        buckets: [],
       };
-      byPrompt.set(row.promptId, bucket);
+      byPrompt.set(row.promptId, group);
     }
-    bucket.snapshots.push(row.snapshot);
+    group.buckets.push(row.bucket);
   }
 
+  const estimateByPromptId = await loadCurrentCoverageEstimates(
+    [...byPrompt.entries()].map(([promptId, group]) => ({
+      id: promptId,
+      expectedAnswerElements: group.expectedAnswerElements,
+    })),
+  );
+
   const promptRows: PromptPerformanceRow[] = [];
-  for (const [promptId, bucket] of byPrompt) {
-    // Never empty: a bucket only exists because at least one row was pushed
+  for (const [promptId, group] of byPrompt) {
+    // Never empty: a group only exists because at least one row was pushed
     // into it above.
-    const latest = [...bucket.snapshots].sort(
-      (a, b) => b.runDate.getTime() - a.runDate.getTime(),
+    const latest = [...group.buckets].sort(
+      (a, b) => b.bucketDate.getTime() - a.bucketDate.getTime(),
     )[0]!;
+    const classified = classifyBucket(latest, allBucketRows);
 
     promptRows.push({
       promptId,
-      promptType: bucket.promptType,
-      promptText: bucket.promptText,
-      topic: bucket.topic,
-      personaId: bucket.personaId,
-      personaName: bucket.personaName,
-      profoundPromptId: bucket.profoundPromptId,
-      classification: classifySnapshot(latest),
-      missingElements: detectMissingElements(bucket.expectedAnswerElements, {
-        rawAnswer: latest.rawAnswer,
-      }),
-      metrics: aggregateMetrics(bucket.snapshots.map(toMetrics)),
+      promptType: group.promptType,
+      promptText: group.promptText,
+      topic: group.topic,
+      personaId: group.personaId,
+      personaName: group.personaName,
+      profoundPromptId: group.profoundPromptId,
+      classification: classified.classification,
+      competitorVisible: classified.competitorVisible,
+      missingElements: estimateByPromptId.get(promptId)?.missing ?? [],
+      metrics: aggregateMetrics(group.buckets.map(toMetrics)),
     });
   }
 
   const personaGroups = new Map<string, PersonaPerformanceGroup>();
-  for (const [, bucket] of byPrompt) {
-    let group = personaGroups.get(bucket.personaId);
-    if (!group) {
-      group = {
-        personaId: bucket.personaId,
-        personaName: bucket.personaName,
+  for (const [, group] of byPrompt) {
+    let personaGroup = personaGroups.get(group.personaId);
+    if (!personaGroup) {
+      personaGroup = {
+        personaId: group.personaId,
+        personaName: group.personaName,
         metrics: aggregateMetrics([]),
         prompts: [],
       };
-      personaGroups.set(bucket.personaId, group);
+      personaGroups.set(group.personaId, personaGroup);
     }
   }
   for (const row of promptRows) {
     personaGroups.get(row.personaId)?.prompts.push(row);
   }
-  for (const [personaId, group] of personaGroups) {
-    const personaSnapshots = [...byPrompt.entries()]
-      .filter(([, bucket]) => bucket.personaId === personaId)
-      .flatMap(([, bucket]) => bucket.snapshots);
-    group.metrics = aggregateMetrics(personaSnapshots.map(toMetrics));
+  for (const [personaId, personaGroup] of personaGroups) {
+    const personaBuckets = [...byPrompt.entries()]
+      .filter(([, group]) => group.personaId === personaId)
+      .flatMap(([, group]) => group.buckets);
+    personaGroup.metrics = aggregateMetrics(personaBuckets.map(toMetrics));
   }
 
   return {
-    overall: aggregateMetrics(rows.map((row) => toMetrics(row.snapshot))),
+    overall: aggregateMetrics(rows.map((row) => toMetrics(row.bucket))),
     brandAbsentCount: promptRows.filter((row) => row.classification === "brand_absent").length,
-    competitorDominatedCount: promptRows.filter(
-      (row) => row.classification === "competitor_dominated",
-    ).length,
+    competitorVisibleCount: promptRows.filter((row) => row.competitorVisible === true).length,
     missingElementsCount: promptRows.filter((row) => row.missingElements.length > 0).length,
     personas: [...personaGroups.values()].sort((a, b) =>
       a.personaName.localeCompare(b.personaName),
@@ -335,7 +410,7 @@ export async function getControlComparison(
 
   const promptIds = pairs.flatMap((pair) => [pair.personaPromptId, pair.controlPromptId]);
 
-  const [promptRows, snapshots] = await Promise.all([
+  const [promptRows, buckets] = await Promise.all([
     db
       .select({ id: prompts.id, promptText: prompts.promptText })
       .from(prompts)
@@ -348,14 +423,14 @@ export async function getControlComparison(
       ),
     db
       .select()
-      .from(profoundResultSnapshots)
+      .from(profoundResultBuckets)
       .where(
         and(
-          eq(profoundResultSnapshots.organizationId, ctx.organizationId),
-          eq(profoundResultSnapshots.brandId, ctx.brandId),
-          inArray(profoundResultSnapshots.promptId, promptIds),
-          gte(profoundResultSnapshots.runDate, start),
-          lte(profoundResultSnapshots.runDate, end),
+          eq(profoundResultBuckets.organizationId, ctx.organizationId),
+          eq(profoundResultBuckets.brandId, ctx.brandId),
+          inArray(profoundResultBuckets.promptId, promptIds),
+          gte(profoundResultBuckets.bucketDate, start),
+          lte(profoundResultBuckets.bucketDate, end),
         ),
       ),
   ]);
@@ -363,11 +438,11 @@ export async function getControlComparison(
   const promptTextById = new Map(promptRows.map((row) => [row.id, row.promptText]));
 
   const metricsByPromptId = new Map<string, SnapshotMetrics[]>();
-  for (const snapshot of snapshots) {
-    if (!snapshot.promptId) continue;
-    const list = metricsByPromptId.get(snapshot.promptId) ?? [];
-    list.push(toMetrics(snapshot));
-    metricsByPromptId.set(snapshot.promptId, list);
+  for (const bucket of buckets) {
+    if (!bucket.promptId) continue;
+    const list = metricsByPromptId.get(bucket.promptId) ?? [];
+    list.push(toMetrics(bucket));
+    metricsByPromptId.set(bucket.promptId, list);
   }
 
   return {
@@ -384,11 +459,20 @@ export async function getControlComparison(
   };
 }
 
-// ── Raw-answer inspection ────────────────────────────────────────────────────
+// ── Single-prompt bucket inspection ─────────────────────────────────────────
 
-export type PromptResultRun = SnapshotRow & {
+export type PromptResultBucket = BucketRow & {
   classification: ResultClassification;
-  missingElements: string[];
+  competitorVisible: boolean | null;
+};
+
+export type PromptAnswerCoverageEstimateDetail = {
+  covered: string[];
+  missing: string[];
+  confidence: number;
+  rationale: string;
+  modelId: string | null;
+  createdAt: Date;
 };
 
 export async function getPromptResultDetail(
@@ -399,7 +483,9 @@ export async function getPromptResultDetail(
   prompt: { id: string; text: string; topic: string; expectedAnswerElements: string[] };
   profoundPromptId: string | null;
   profoundCategoryId: string | null;
-  runs: PromptResultRun[];
+  /** This product's own self-computed estimate for the prompt's *current* expected elements, or null if none exists yet — never a stale one. */
+  answerCoverageEstimate: PromptAnswerCoverageEstimateDetail | null;
+  buckets: PromptResultBucket[];
 }> {
   validateRange(input.startDate, input.endDate);
   const { start, end } = dateBounds(input.startDate, input.endDate);
@@ -429,18 +515,30 @@ export async function getPromptResultDetail(
     .orderBy(desc(profoundPromptLinks.createdAt))
     .limit(1);
 
-  const snapshots = await db
+  const buckets = await db
     .select()
-    .from(profoundResultSnapshots)
+    .from(profoundResultBuckets)
     .where(
       and(
-        eq(profoundResultSnapshots.organizationId, ctx.organizationId),
-        eq(profoundResultSnapshots.promptId, promptId),
-        gte(profoundResultSnapshots.runDate, start),
-        lte(profoundResultSnapshots.runDate, end),
+        eq(profoundResultBuckets.organizationId, ctx.organizationId),
+        eq(profoundResultBuckets.promptId, promptId),
+        gte(profoundResultBuckets.bucketDate, start),
+        lte(profoundResultBuckets.bucketDate, end),
       ),
     )
-    .orderBy(desc(profoundResultSnapshots.runDate));
+    .orderBy(desc(profoundResultBuckets.bucketDate));
+
+  const expectedElementsHash = hashExpectedElements(prompt.expectedAnswerElements);
+  const [estimate] = await db
+    .select()
+    .from(promptAnswerCoverageEstimates)
+    .where(
+      and(
+        eq(promptAnswerCoverageEstimates.promptId, promptId),
+        eq(promptAnswerCoverageEstimates.expectedElementsHash, expectedElementsHash),
+      ),
+    )
+    .limit(1);
 
   return {
     prompt: {
@@ -451,12 +549,23 @@ export async function getPromptResultDetail(
     },
     profoundPromptId: link?.profoundPromptId ?? null,
     profoundCategoryId: link?.profoundCategoryId ?? null,
-    runs: snapshots.map((snapshot) => ({
-      ...snapshot,
-      classification: classifySnapshot(snapshot),
-      missingElements: detectMissingElements(prompt.expectedAnswerElements, {
-        rawAnswer: snapshot.rawAnswer,
-      }),
-    })),
+    answerCoverageEstimate: estimate
+      ? {
+          covered: estimate.covered,
+          missing: estimate.missing,
+          confidence: estimate.confidence,
+          rationale: estimate.rationale,
+          modelId: estimate.modelId,
+          createdAt: estimate.createdAt,
+        }
+      : null,
+    buckets: buckets.map((bucket) => {
+      const classified = classifyBucket(bucket, buckets);
+      return {
+        ...bucket,
+        classification: classified.classification,
+        competitorVisible: classified.competitorVisible,
+      };
+    }),
   };
 }

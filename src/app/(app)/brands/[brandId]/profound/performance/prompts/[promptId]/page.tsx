@@ -18,7 +18,6 @@ function formatPercent(value: number | null): string {
 
 const CLASSIFICATION_LABEL: Record<string, string> = {
   brand_absent: "Brand absent",
-  competitor_dominated: "Competitor-dominated",
   normal: "Normal",
 };
 
@@ -48,7 +47,7 @@ export default async function ProfoundPromptResultDetailPage({
     <>
       <PageHeader
         title={detail.prompt.text}
-        description={`${startDate} to ${endDate} · ${detail.runs.length} run${detail.runs.length === 1 ? "" : "s"}`}
+        description={`${startDate} to ${endDate} · ${detail.buckets.length} bucket${detail.buckets.length === 1 ? "" : "s"}`}
         breadcrumb={`${ctx.brandName} / Profound / Performance / ${promptId}`}
       />
 
@@ -76,111 +75,121 @@ export default async function ProfoundPromptResultDetailPage({
         </div>
       </Card>
 
-      {detail.runs.length === 0 ? (
+      <Card className="mb-4">
+        <CardHeader
+          title="Answer coverage estimate"
+          description="Estimated by this app — not confirmed by Profound. Profound exposes no raw answer text, so this product judges likely coverage itself from the prompt's expected elements and its own retrieved evidence."
+          actions={<OriginBadge origin="local" />}
+        />
+        <div className="space-y-3 px-4 py-3">
+          {detail.answerCoverageEstimate ? (
+            <>
+              <KeyValue
+                items={[
+                  {
+                    label: "Confidence",
+                    value: formatPercent(detail.answerCoverageEstimate.confidence),
+                  },
+                  { label: "Model", value: detail.answerCoverageEstimate.modelId ?? "—" },
+                  {
+                    label: "Estimated at",
+                    value: detail.answerCoverageEstimate.createdAt.toISOString().slice(0, 10),
+                  },
+                ]}
+              />
+              <p className="text-sm text-ink">{detail.answerCoverageEstimate.rationale}</p>
+              <div>
+                <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
+                  Likely covered
+                </p>
+                {detail.answerCoverageEstimate.covered.length > 0 ? (
+                  <Chips values={detail.answerCoverageEstimate.covered} />
+                ) : (
+                  <p className="text-sm text-ink-muted">None estimated as covered.</p>
+                )}
+              </div>
+              <div>
+                <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
+                  Likely missing
+                </p>
+                {detail.answerCoverageEstimate.missing.length > 0 ? (
+                  <Chips values={detail.answerCoverageEstimate.missing} tone="accent" />
+                ) : (
+                  <p className="text-sm text-ink-muted">None estimated as missing.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-ink-muted">
+              No estimate yet for this prompt&apos;s current expected answer elements. It is
+              computed by a background job after results are retrieved.
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {detail.buckets.length === 0 ? (
         <Card>
           <div className="px-4 py-6 text-sm text-ink-muted">
-            No runs in this range. Retrieve results from the performance page, or widen the date
+            No buckets in this range. Retrieve results from the performance page, or widen the date
             range.
           </div>
         </Card>
       ) : (
         <div className="space-y-4">
-          {detail.runs.map((run) => (
-            <Card key={run.id}>
+          {detail.buckets.map((bucket) => (
+            <Card key={bucket.id}>
               <CardHeader
-                title={`${run.runDate.toISOString().slice(0, 10)} · ${run.model ?? run.modelId}`}
-                description={`Run ${run.runId}${run.region ? ` · ${run.region}` : ""}${run.asset ? ` · ${run.asset}` : ""}`}
+                title={`${bucket.bucketDate.toISOString().slice(0, 10)} · ${bucket.model ?? bucket.modelId}`}
+                description={`${bucket.topic ?? "—"}${bucket.region ? ` · ${bucket.region}` : ""} · ${bucket.asset}`}
               />
               <div className="space-y-3 px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    tone={
-                      run.classification === "brand_absent"
-                        ? "danger"
-                        : run.classification === "competitor_dominated"
-                          ? "warn"
-                          : "success"
-                    }
-                  >
-                    {CLASSIFICATION_LABEL[run.classification]}
+                  <Badge tone={bucket.classification === "brand_absent" ? "danger" : "success"}>
+                    {CLASSIFICATION_LABEL[bucket.classification]}
                   </Badge>
-                  <OriginBadge origin={run.dataOrigin} />
-                  {run.missingElements.length > 0 ? (
-                    <Badge tone="warn">Missing: {run.missingElements.join(", ")}</Badge>
+                  <OriginBadge origin={bucket.dataOrigin} />
+                  {bucket.competitorVisible === true ? (
+                    <Badge tone="warn">Competitor visible</Badge>
+                  ) : bucket.competitorVisible === null ? (
+                    <Badge
+                      tone="neutral"
+                      title="Competitor asset scope was not requested for this retrieval"
+                    >
+                      Competitor visibility not measured
+                    </Badge>
                   ) : null}
                 </div>
 
                 <KeyValue
                   items={[
-                    { label: "Visibility score", value: formatPercent(run.visibilityScore) },
-                    { label: "Share of voice", value: formatPercent(run.shareOfVoice) },
-                    { label: "Mentions", value: run.mentionCount ?? 0 },
-                    { label: "Executions", value: run.executions ?? 0 },
+                    { label: "Visibility score", value: formatPercent(bucket.visibilityScore) },
+                    { label: "Share of voice", value: formatPercent(bucket.shareOfVoice) },
                     {
                       label: "Average position",
-                      value: run.averagePosition != null ? run.averagePosition.toFixed(2) : "—",
+                      value: bucket.averagePosition != null ? bucket.averagePosition.toFixed(2) : "—",
                     },
-                    { label: "Citations", value: run.citationCount ?? 0 },
-                    { label: "Citation share", value: formatPercent(run.citationShare) },
+                    { label: "Citations", value: bucket.citationCount ?? 0 },
+                    { label: "Citation share", value: formatPercent(bucket.citationShare) },
                   ]}
                 />
 
-                {run.mentions.length > 0 ? (
-                  <div>
-                    <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
-                      Other entities mentioned
-                    </p>
-                    <ul className="text-sm text-ink">
-                      {run.mentions.map((mention, index) => {
-                        const entity = String((mention as { entity?: unknown }).entity ?? "—");
-                        const share = (mention as { share?: unknown }).share;
-                        return (
-                          <li key={`${entity}-${index}`}>
-                            {entity} — {typeof share === "number" ? formatPercent(share) : "—"}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                ) : null}
-
-                <div>
-                  <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
-                    Raw answer
-                  </p>
-                  <p className="whitespace-pre-wrap text-sm text-ink">
-                    {run.rawAnswer ?? "No answer text was returned for this run."}
-                  </p>
-                </div>
-
-                {run.citations.length > 0 ? (
+                {bucket.citations.length > 0 ? (
                   <div>
                     <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
                       Citations
                     </p>
                     <ul className="list-inside list-disc text-sm text-ink">
-                      {run.citations.map((citation, index) => (
-                        <li key={index}>
-                          {String((citation as { title?: unknown }).title ?? "Untitled")} —{" "}
-                          {String((citation as { domain?: unknown }).domain ?? "")}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-
-                {run.sentimentThemes.length > 0 ? (
-                  <div>
-                    <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-muted">
-                      Sentiment themes
-                    </p>
-                    <ul className="text-sm text-ink">
-                      {run.sentimentThemes.map((theme, index) => (
-                        <li key={index}>
-                          {String((theme as { theme?: unknown }).theme ?? "")} —{" "}
-                          {String((theme as { sentiment?: unknown }).sentiment ?? "")}
-                        </li>
-                      ))}
+                      {bucket.citations.map((citation, index) => {
+                        const domain = String((citation as { domain?: unknown }).domain ?? "—");
+                        const count = (citation as { count?: unknown }).count;
+                        return (
+                          <li key={`${domain}-${index}`}>
+                            {domain} — {typeof count === "number" ? count : 0} citation
+                            {count === 1 ? "" : "s"}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ) : null}

@@ -26,7 +26,6 @@ export type AccountVisibilityRow = {
   date: string;
   visibilityScore: number;
   shareOfVoice: number;
-  mentionCount: number;
 };
 
 export type AccountCitationsRow = {
@@ -40,17 +39,9 @@ export type AccountCitationsRow = {
 export type AccountSentimentRow = {
   topic: string;
   date: string;
-  sentimentThemes: { theme: string; sentiment: "positive" | "neutral" | "negative" }[];
+  positiveSentiment: number | null;
+  negativeSentiment: number | null;
 };
-
-const SENTIMENT_THEME_POOL: readonly string[] = [
-  "deployment flexibility",
-  "pricing transparency",
-  "ease of onboarding",
-  "data governance",
-  "customer support responsiveness",
-  "integration breadth",
-];
 
 const CITATION_DOMAIN_POOL: readonly string[] = [
   "g2.com",
@@ -67,7 +58,6 @@ export function generateAccountVisibility(topic: string, date: string): AccountV
     date,
     visibilityScore: round3(0.1 + fraction(hex, 0) * 0.7),
     shareOfVoice: round3(0.05 + fraction(hex, 8) * 0.5),
-    mentionCount: 5 + Math.round(fraction(hex, 16) * 45),
   };
 }
 
@@ -90,18 +80,9 @@ export function generateAccountCitations(topic: string, date: string): AccountCi
 
 export function generateAccountSentiment(topic: string, date: string): AccountSentimentRow {
   const hex = hashHex(`account_sentiment:${topic}:${date}`);
-  const themeCount = 1 + Math.floor(fraction(hex, 0) * 3);
-  const sentiments: AccountSentimentRow["sentimentThemes"][number]["sentiment"][] = [
-    "positive",
-    "neutral",
-    "negative",
-  ];
-  const sentimentThemes = Array.from({ length: themeCount }, (_, i) => {
-    const themeIndex = parseInt(hex.slice(8 + i * 2, 10 + i * 2), 16) % SENTIMENT_THEME_POOL.length;
-    const sentimentIndex = parseInt(hex.slice(20 + i * 2, 22 + i * 2), 16) % sentiments.length;
-    return { theme: SENTIMENT_THEME_POOL[themeIndex]!, sentiment: sentiments[sentimentIndex]! };
-  });
-  return { topic, date, sentimentThemes };
+  const positiveSentiment = Math.round(fraction(hex, 0) * 60 + 20);
+  const negativeSentiment = Math.round(fraction(hex, 8) * (100 - positiveSentiment));
+  return { topic, date, positiveSentiment, negativeSentiment };
 }
 
 function round3(value: number): number {

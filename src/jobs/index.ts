@@ -17,6 +17,7 @@ import "./handlers/sparktoro-section";
 import "./handlers/generate-opportunities";
 import "./handlers/generate-brief";
 import "./handlers/generate-page-audit";
+import "./handlers/estimate-answer-coverage";
 
 export { JOB_TYPES, registeredJobTypes, getJobHandler } from "./registry";
 export type { JobHandler, JobContext, JobResult, JobType } from "./registry";

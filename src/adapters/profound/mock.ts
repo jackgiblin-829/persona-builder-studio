@@ -10,7 +10,12 @@ import {
   MOCK_TAGS,
   MOCK_TOPICS,
 } from "@fixtures/profound/account";
-import { eachDateInRange, generateRun } from "@fixtures/profound/results";
+import {
+  eachDateInRange,
+  generateCitationBuckets,
+  generateSentimentBucket,
+  generateVisibilityBuckets,
+} from "@fixtures/profound/results";
 import {
   generateAccountCitations,
   generateAccountSentiment,
@@ -24,7 +29,6 @@ import type {
   ProfoundAccountSentimentRow,
   ProfoundAccountVisibilityRow,
   ProfoundAdapter,
-  ProfoundAnswerRow,
   ProfoundAsset,
   ProfoundCategory,
   ProfoundCitationsRow,
@@ -233,30 +237,37 @@ export class MockProfoundAdapter implements ProfoundAdapter {
   }
 
   async queryVisibility(query: ProfoundResultQuery): Promise<ProfoundVisibilityRow[]> {
+    const ownedAsset = MOCK_ASSETS[0]?.name ?? "northwind-analytics.example";
     const rows: ProfoundVisibilityRow[] = [];
     for (const profoundPromptId of query.profoundPromptIds) {
       for (const modelId of query.modelIds) {
         for (const date of eachDateInRange(query.startDate, query.endDate)) {
-          const run = generateRun(profoundPromptId, modelId, date);
-          rows.push({
-            profoundPromptId: run.profoundPromptId,
-            runId: run.runId,
-            runDate: run.date,
-            modelId: run.modelId,
-            model: MOCK_MODELS.find((m) => m.id === modelId)?.name ?? modelId,
-            region: null,
-            asset: null,
-            topic: null,
-            profoundPersona: null,
-            tags: [],
-            visibilityScore: run.visibilityScore,
-            shareOfVoice: run.shareOfVoice,
-            mentionCount: run.mentionCount,
-            executions: run.executions,
-            averagePosition: run.averagePosition,
-            brandMentioned: run.brandMentioned,
-            mentions: run.mentions,
-          });
+          for (const bucket of generateVisibilityBuckets(
+            profoundPromptId,
+            modelId,
+            date,
+            ownedAsset,
+            query.competitorAssets ?? [],
+          )) {
+            rows.push({
+              profoundPromptId: bucket.profoundPromptId,
+              bucketDate: bucket.date,
+              modelId: bucket.modelId,
+              model: MOCK_MODELS.find((m) => m.id === modelId)?.name ?? modelId,
+              topicId: null,
+              topic: null,
+              regionId: null,
+              region: null,
+              personaId: null,
+              profoundPersona: null,
+              asset: bucket.asset,
+              assetOwned: bucket.assetOwned,
+              rank: bucket.rank,
+              visibilityScore: bucket.visibilityScore,
+              shareOfVoice: bucket.shareOfVoice,
+              averagePosition: bucket.averagePosition,
+            });
+          }
         }
       }
     }
@@ -266,17 +277,15 @@ export class MockProfoundAdapter implements ProfoundAdapter {
   async queryCitations(query: ProfoundResultQuery): Promise<ProfoundCitationsRow[]> {
     const rows: ProfoundCitationsRow[] = [];
     for (const profoundPromptId of query.profoundPromptIds) {
-      for (const modelId of query.modelIds) {
-        for (const date of eachDateInRange(query.startDate, query.endDate)) {
-          const run = generateRun(profoundPromptId, modelId, date);
+      for (const date of eachDateInRange(query.startDate, query.endDate)) {
+        for (const bucket of generateCitationBuckets(profoundPromptId, date)) {
           rows.push({
-            profoundPromptId: run.profoundPromptId,
-            runId: run.runId,
-            modelId: run.modelId,
-            citationCount: run.citationCount,
-            citationShare: run.citationShare,
-            citations: run.citations,
-            searchQueries: run.searchQueries,
+            profoundPromptId: bucket.profoundPromptId,
+            bucketDate: bucket.date,
+            domain: bucket.domain,
+            count: bucket.count,
+            citationShare: bucket.citationShare,
+            rank: bucket.rank,
           });
         }
       }
@@ -285,36 +294,33 @@ export class MockProfoundAdapter implements ProfoundAdapter {
   }
 
   async querySentiment(query: ProfoundResultQuery): Promise<ProfoundSentimentRow[]> {
+    const asset = query.asset ?? MOCK_ASSETS[0]?.name ?? "northwind-analytics.example";
     const rows: ProfoundSentimentRow[] = [];
     for (const profoundPromptId of query.profoundPromptIds) {
-      for (const modelId of query.modelIds) {
-        for (const date of eachDateInRange(query.startDate, query.endDate)) {
-          const run = generateRun(profoundPromptId, modelId, date);
-          rows.push({
-            profoundPromptId: run.profoundPromptId,
-            runId: run.runId,
-            modelId: run.modelId,
-            sentimentThemes: run.sentimentThemes,
-          });
-        }
-      }
-    }
-    return rows;
-  }
-
-  async getPromptAnswers(
-    profoundPromptId: string,
-    range: { startDate: string; endDate: string },
-  ): Promise<ProfoundAnswerRow[]> {
-    const rows: ProfoundAnswerRow[] = [];
-    for (const model of MOCK_MODELS) {
-      for (const date of eachDateInRange(range.startDate, range.endDate)) {
-        const run = generateRun(profoundPromptId, model.id, date);
+      for (const date of eachDateInRange(query.startDate, query.endDate)) {
+        const bucket = generateSentimentBucket(profoundPromptId, date);
         rows.push({
-          profoundPromptId: run.profoundPromptId,
-          runId: run.runId,
-          modelId: run.modelId,
-          rawAnswer: run.rawAnswer,
+          profoundPromptId: bucket.profoundPromptId,
+          asset,
+          bucketDate: bucket.date,
+          modelId: null,
+          model: null,
+          topicId: null,
+          topic: null,
+          regionId: null,
+          region: null,
+          personaId: null,
+          profoundPersona: null,
+          tag: null,
+          theme: null,
+          claim: null,
+          profoundRun: null,
+          competitor: null,
+          positiveSentiment: bucket.positiveSentiment,
+          negativeSentiment: bucket.negativeSentiment,
+          occurrence: bucket.occurrence,
+          citedWebsites: [],
+          rank: null,
         });
       }
     }

@@ -4,145 +4,218 @@
  * here takes the data it needs as arguments and is unit-testable without a
  * database or a vendor call.
  *
- * Two things are deliberately computed here rather than trusted from Profound:
+ * Redesigned 2026-08-10 around the real bucket-shaped v2 reporting API (see
+ * `src/adapters/profound/live.ts`). Two things follow from that:
  *
- * - **Classification** (`classifyResult`) reads the merged snapshot, not a
- *   single vendor call. "Brand-absent" and "competitor-dominated" are the
- *   application's judgment about what a run means, built from the columns the
- *   vendor returned — Profound has no such field itself.
- * - **Missing expected elements** (`detectMissingElements`) is a naive
- *   normalized substring match against the raw answer. It will under-count on
- *   paraphrase and over-count on formatting — that is an accepted limitation
- *   of not running a second model call just to grade the first one's answer.
+ * - **Classification** (`classifyResult`) now reads only real vendor fields —
+ *   `visibilityScore` for brand-absence, and a competitor's `shareOfVoice` in
+ *   the same bucket (when competitor asset scope was requested) for
+ *   competitor visibility. There is no vendor concept of a mention count or a
+ *   brand-mentioned flag, so neither is read or fabricated. When competitor
+ *   scope wasn't requested, the competitor signal is `null` — not measured,
+ *   never guessed.
+ * - **Missing expected elements** used to be a substring match against
+ *   Profound's raw answer text. Profound has no raw-answer endpoint at all,
+ *   so that capability moved to a separate, self-computed feature — see
+ *   `src/jobs/handlers/estimate-answer-coverage.ts` — and is not part of this
+ *   file anymore.
+ * - Sentiment is not merged onto visibility/citations rows: the real
+ *   `/v2/reports/sentiment` endpoint has a different request shape (requires
+ *   an `asset` param, allows `group_by` dimensions like `tag`/`theme`/`claim`/
+ *   `run`/`competitor` that visibility/citations don't have), so it is
+ *   surfaced as its own independently-queried bucket set.
  */
 
-import type {
-  ProfoundAnswerRow,
-  ProfoundCitationsRow,
-  ProfoundSentimentRow,
-  ProfoundVisibilityRow,
-} from "@/adapters/profound/types";
+import type { ProfoundCitationsRow, ProfoundVisibilityRow } from "@/adapters/profound/types";
 
 export type MergedResultRow = {
   profoundPromptId: string;
-  runId: string;
-  runDate: string;
+  bucketDate: string;
   modelId: string;
   model: string | null;
-  region: string | null;
-  asset: string | null;
+  topicId: string | null;
   topic: string | null;
+  regionId: string | null;
+  region: string | null;
+  personaId: string | null;
   profoundPersona: string | null;
-  tags: string[];
+  asset: string;
+  assetOwned: boolean | null;
+  rank: number | null;
   visibilityScore: number | null;
   shareOfVoice: number | null;
-  mentionCount: number;
-  executions: number;
   averagePosition: number | null;
-  brandMentioned: boolean;
-  mentions: { entity: string; mentionCount: number; share: number }[];
   citationCount: number;
   citationShare: number | null;
+  citationDomains: string[];
   citations: Record<string, unknown>[];
-  searchQueries: string[];
-  sentimentThemes: Record<string, unknown>[];
-  rawAnswer: string | null;
 };
 
+/** The real API's natural grouping key — matches `profound_result_buckets`'s unique index (minus tenant/asset). */
+function bucketKey(row: {
+  profoundPromptId: string | null;
+  bucketDate: string;
+  modelId: string;
+  topicId: string | null;
+  regionId: string | null;
+  personaId: string | null;
+}): string {
+  return [
+    row.profoundPromptId ?? "",
+    row.bucketDate,
+    row.modelId,
+    row.topicId ?? "",
+    row.regionId ?? "",
+    row.personaId ?? "",
+  ].join("::");
+}
+
 /**
- * Merges the four independent reporting calls into one row per
- * `(profoundPromptId, runId, modelId)` — the exact grain of the
- * `profound_result_snapshots` unique index. A visibility row is the anchor:
- * without one, there is no run to attach citations, sentiment or an answer to,
- * so keys that only appear in those three are dropped rather than guessed at.
+ * The real `/v2/reports/citations` endpoint rejects any `group_by` wider than
+ * one dimension (or topic+model), optionally plus date — verified live
+ * 2026-08-10 (a request grouped by prompt+date+model+topic+region+persona
+ * 422s with "Unsupported group_by combination"). So citations can only be
+ * requested grouped by `prompt` + `date`, never per-model/topic/region/
+ * persona simultaneously. This coarser key is what citations can actually be
+ * matched on — not a design choice, a real API constraint.
  */
-export function mergeResultRows(
+function promptDateKey(row: { profoundPromptId: string | null; bucketDate: string }): string {
+  return `${row.profoundPromptId ?? ""}::${row.bucketDate}`;
+}
+
+/**
+ * Merges visibility with citations onto the owned asset's bucket row.
+ * Citations are matched by (prompt, date) only — see `promptDateKey` — so the
+ * same citation set is attached to every model's bucket for that prompt/date;
+ * that's what the real API can actually attribute, not a per-model citation
+ * count. Citations are also category-scoped, not asset-scoped — a cited
+ * domain isn't reported as "citing asset X" — so this attaches the full
+ * citation set observed for a bucket to the owned asset's row only.
+ * Competitor rows carry no citation data, not because competitors receive
+ * none, but because this product only displays citation detail in the
+ * context of its own tracked prompts.
+ */
+export function mergeVisibilityCitations(
   visibility: ProfoundVisibilityRow[],
   citations: ProfoundCitationsRow[],
-  sentiment: ProfoundSentimentRow[],
-  answers: ProfoundAnswerRow[],
 ): MergedResultRow[] {
-  const citationsByKey = new Map(citations.map((row) => [rowKey(row), row]));
-  const sentimentByKey = new Map(sentiment.map((row) => [rowKey(row), row]));
-  const answersByKey = new Map(answers.map((row) => [rowKey(row), row]));
+  const citationsByKey = new Map<string, ProfoundCitationsRow[]>();
+  for (const row of citations) {
+    if (!row.profoundPromptId) continue;
+    const key = promptDateKey(row);
+    const list = citationsByKey.get(key) ?? [];
+    list.push(row);
+    citationsByKey.set(key, list);
+  }
 
-  return visibility.map((row) => {
-    const key = rowKey(row);
-    const citation = citationsByKey.get(key);
-    const sentimentRow = sentimentByKey.get(key);
-    const answer = answersByKey.get(key);
+  return visibility
+    .filter(
+      (row): row is ProfoundVisibilityRow & { profoundPromptId: string } =>
+        row.profoundPromptId != null,
+    )
+    .map((row) => {
+      const matching = row.assetOwned ? (citationsByKey.get(promptDateKey(row)) ?? []) : [];
+      const citationCount = matching.reduce((total, c) => total + c.count, 0);
+      const citationShare =
+        matching.length > 0
+          ? matching.reduce((total, c) => total + (c.citationShare ?? 0), 0) / matching.length
+          : null;
 
-    return {
-      profoundPromptId: row.profoundPromptId,
-      runId: row.runId,
-      runDate: row.runDate,
-      modelId: row.modelId,
-      model: row.model,
-      region: row.region,
-      asset: row.asset,
-      topic: row.topic,
-      profoundPersona: row.profoundPersona,
-      tags: row.tags,
-      visibilityScore: row.visibilityScore,
-      shareOfVoice: row.shareOfVoice,
-      mentionCount: row.mentionCount,
-      executions: row.executions,
-      averagePosition: row.averagePosition,
-      brandMentioned: row.brandMentioned,
-      mentions: row.mentions,
-      citationCount: citation?.citationCount ?? 0,
-      citationShare: citation?.citationShare ?? null,
-      citations: citation?.citations ?? [],
-      searchQueries: citation?.searchQueries ?? [],
-      sentimentThemes: sentimentRow?.sentimentThemes ?? [],
-      rawAnswer: answer?.rawAnswer ?? null,
-    };
-  });
+      return {
+        profoundPromptId: row.profoundPromptId,
+        bucketDate: row.bucketDate,
+        modelId: row.modelId,
+        model: row.model,
+        topicId: row.topicId,
+        topic: row.topic,
+        regionId: row.regionId,
+        region: row.region,
+        personaId: row.personaId,
+        profoundPersona: row.profoundPersona,
+        asset: row.asset,
+        assetOwned: row.assetOwned,
+        rank: row.rank,
+        visibilityScore: row.visibilityScore,
+        shareOfVoice: row.shareOfVoice,
+        averagePosition: row.averagePosition,
+        citationCount,
+        citationShare,
+        citationDomains: matching.map((c) => c.domain),
+        citations: matching.map((c) => ({
+          domain: c.domain,
+          count: c.count,
+          citationShare: c.citationShare,
+          rank: c.rank,
+        })),
+      };
+    });
 }
-
-function rowKey(row: { profoundPromptId: string; runId: string; modelId: string }): string {
-  return `${row.profoundPromptId}::${row.runId}::${row.modelId}`;
-}
-
-export type ResultClassification = "brand_absent" | "competitor_dominated" | "normal";
-
-export type ClassifiableResult = {
-  brandMentioned: boolean;
-  mentionCount: number;
-  shareOfVoice: number | null;
-  mentions: { entity: string; share: number }[];
-};
 
 /**
- * `brand_absent` wins over `competitor_dominated` — a brand that never showed
- * up did not lose a competition, it was never in one.
+ * The strongest competitor's share of voice within the same bucket as `row`,
+ * or `null` if no competitor rows exist for that bucket — either because
+ * competitor asset scope wasn't requested for this query, or because none
+ * were returned. Never conflated with "no competitor visibility" (`0`).
  */
-export function classifyResult(row: ClassifiableResult): ResultClassification {
-  if (!row.brandMentioned || row.mentionCount === 0) return "brand_absent";
-  const maxCompetitorShare = row.mentions.reduce((max, m) => Math.max(max, m.share), 0);
-  if (row.shareOfVoice != null && maxCompetitorShare > row.shareOfVoice)
-    return "competitor_dominated";
-  return "normal";
+export function competitorShareOfVoiceFor(
+  row: {
+    profoundPromptId: string | null;
+    bucketDate: string;
+    modelId: string;
+    topicId: string | null;
+    regionId: string | null;
+    personaId: string | null;
+  },
+  allVisibilityRows: ProfoundVisibilityRow[],
+): number | null {
+  const key = bucketKey(row);
+  const competitorRows = allVisibilityRows.filter(
+    (r) => !r.assetOwned && bucketKey(r) === key,
+  );
+  if (competitorRows.length === 0) return null;
+  return competitorRows.reduce((max, r) => Math.max(max, r.shareOfVoice ?? 0), 0);
 }
 
-function normalizeText(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ").trim();
-}
+export type ResultClassification = "brand_absent" | "normal";
 
-/** Which of a prompt's expected answer elements are absent from the raw answer text. */
-export function detectMissingElements(
-  expectedAnswerElements: string[],
-  row: { rawAnswer: string | null },
-): string[] {
-  const haystack = normalizeText(row.rawAnswer ?? "");
-  return expectedAnswerElements.filter((element) => !haystack.includes(normalizeText(element)));
+export type ClassifiedResult = {
+  classification: ResultClassification;
+  /** Null when competitor asset scope wasn't requested for this bucket — not measured, not "no competitor visible". */
+  competitorVisible: boolean | null;
+};
+
+export type ClassifiableResult = {
+  visibilityScore: number | null;
+  shareOfVoice: number | null;
+  competitorShareOfVoice: number | null;
+};
+
+/** Near-zero, not just exactly zero — the real API can report a tiny nonzero score that still reads as absence. */
+const BRAND_ABSENT_VISIBILITY_THRESHOLD = 0.02;
+
+/**
+ * Classification is computed by this product from real vendor fields, never
+ * taken from a single vendor call — Profound has no "brand_absent" field
+ * itself. `competitorVisible` is `null`, not `false`, whenever competitor
+ * scope wasn't part of the query that produced `row`.
+ */
+export function classifyResult(row: ClassifiableResult): ClassifiedResult {
+  const classification: ResultClassification =
+    row.visibilityScore == null || row.visibilityScore <= BRAND_ABSENT_VISIBILITY_THRESHOLD
+      ? "brand_absent"
+      : "normal";
+
+  const competitorVisible =
+    row.competitorShareOfVoice == null
+      ? null
+      : (row.shareOfVoice ?? 0) < row.competitorShareOfVoice;
+
+  return { classification, competitorVisible };
 }
 
 export type SnapshotMetrics = {
   visibilityScore: number | null;
   shareOfVoice: number | null;
-  mentionCount: number | null;
-  executions: number | null;
   citationCount: number | null;
   citationShare: number | null;
   averagePosition: number | null;
@@ -151,12 +224,10 @@ export type SnapshotMetrics = {
 export type AggregatedMetrics = {
   visibilityScore: number | null;
   shareOfVoice: number | null;
-  mentionCount: number;
-  executions: number;
   citationCount: number;
   citationShare: number | null;
   averagePosition: number | null;
-  runCount: number;
+  bucketCount: number;
 };
 
 function mean(values: (number | null | undefined)[]): number | null {
@@ -173,12 +244,10 @@ export function aggregateMetrics(rows: SnapshotMetrics[]): AggregatedMetrics {
   return {
     visibilityScore: mean(rows.map((r) => r.visibilityScore)),
     shareOfVoice: mean(rows.map((r) => r.shareOfVoice)),
-    mentionCount: sum(rows.map((r) => r.mentionCount)),
-    executions: sum(rows.map((r) => r.executions)),
     citationCount: sum(rows.map((r) => r.citationCount)),
     citationShare: mean(rows.map((r) => r.citationShare)),
     averagePosition: mean(rows.map((r) => r.averagePosition)),
-    runCount: rows.length,
+    bucketCount: rows.length,
   };
 }
 
@@ -188,7 +257,6 @@ export type ControlComparison = {
   deltas: {
     visibilityScore: number | null;
     shareOfVoice: number | null;
-    mentionCount: number;
     citationCount: number;
   };
   /** Compares share of voice; a control with zero presence never "wins". */
@@ -204,7 +272,7 @@ function numericDelta(a: number | null, b: number | null): number | null {
 /**
  * The control-comparison maths §25 requires: aggregate each side of a
  * persona/generic-control prompt pair independently over the same window,
- * then diff. Pure — the caller decides which snapshot rows fall in range.
+ * then diff. Pure — the caller decides which bucket rows fall in range.
  */
 export function compareControl(
   personaRows: SnapshotMetrics[],
@@ -224,7 +292,6 @@ export function compareControl(
     deltas: {
       visibilityScore: numericDelta(persona.visibilityScore, control.visibilityScore),
       shareOfVoice: numericDelta(persona.shareOfVoice, control.shareOfVoice),
-      mentionCount: persona.mentionCount - control.mentionCount,
       citationCount: persona.citationCount - control.citationCount,
     },
     personaOutperforms: (persona.shareOfVoice ?? 0) > (control.shareOfVoice ?? 0),

@@ -5,7 +5,7 @@ import {
   evidenceRecords,
   integrations,
   profoundPromptLinks,
-  profoundResultSnapshots,
+  profoundResultBuckets,
   promptPairs,
   prompts,
 } from "@/db/schema";
@@ -14,7 +14,7 @@ import { promptHash } from "@/lib/prompt-dedupe";
 import {
   aggregateMetrics,
   compareControl,
-  mergeResultRows,
+  mergeVisibilityCitations,
   type AggregatedMetrics,
 } from "@/lib/profound-results";
 import {
@@ -23,6 +23,7 @@ import {
   resetMockProfoundState,
   seedMockProfoundUpload,
 } from "@/adapters/profound";
+import type { ProfoundResultQuery } from "@/adapters/profound/types";
 import { approvePersonaVersion, listPersonas, startPersonaGeneration } from "@/services/personas";
 import { decideSegment, listSegments, startSegmentation } from "@/services/segments";
 import {
@@ -46,12 +47,13 @@ import { drainQueue } from "@/seed/pipeline";
 import { createTestTenant, truncateAll, type TestTenant } from "../helpers/db";
 
 /**
- * Result retrieval end to end (§25): a real deployment through the mock
+ * Result retrieval end to end (§25, redesigned 2026-08-10 around the real
+ * bucket-shaped v2 reporting API): a real deployment through the mock
  * adapter, then retrieval, scoping, idempotency, and cross-checks of the
  * performance panel and control comparison against the same raw adapter
  * calls computed independently — not against hand-picked magic numbers, since
- * the mock's per-run values are themselves derived from a hash the test has
- * no reason to reverse-engineer.
+ * the mock's per-bucket values are themselves derived from a hash the test
+ * has no reason to reverse-engineer.
  */
 
 const CALL = `Facilitator: Before we start, can you describe what you are trying to solve?
@@ -284,10 +286,37 @@ function expectMetricsClose(actual: AggregatedMetrics, expected: AggregatedMetri
       expect(actual[key] as number).toBeCloseTo(expected[key] as number, 9);
     }
   }
-  expect(actual.mentionCount).toBe(expected.mentionCount);
-  expect(actual.executions).toBe(expected.executions);
   expect(actual.citationCount).toBe(expected.citationCount);
-  expect(actual.runCount).toBe(expected.runCount);
+  expect(actual.bucketCount).toBe(expected.bucketCount);
+}
+
+/** Merges the same visibility/citations calls the service reads back, without touching a database. */
+async function groundTruthMetricsFor(
+  organizationId: string,
+  profoundPromptId: string,
+  modelIds: string[],
+): Promise<ReturnType<typeof aggregateMetrics>> {
+  const { adapter } = await getProfoundAdapter(organizationId);
+  const query: ProfoundResultQuery = {
+    categoryId: CATEGORY_ID,
+    profoundPromptIds: [profoundPromptId],
+    modelIds,
+    startDate: START_DATE,
+    endDate: END_DATE,
+  };
+  const [visibility, citations] = await Promise.all([
+    adapter.queryVisibility(query),
+    adapter.queryCitations(query),
+  ]);
+  return aggregateMetrics(
+    mergeVisibilityCitations(visibility, citations).map((row) => ({
+      visibilityScore: row.visibilityScore,
+      shareOfVoice: row.shareOfVoice,
+      citationCount: row.citationCount,
+      citationShare: row.citationShare,
+      averagePosition: row.averagePosition,
+    })),
+  );
 }
 
 let fixture: ApprovedFixture;
@@ -299,7 +328,7 @@ beforeEach(async () => {
 });
 
 describe("retrieval scoping", () => {
-  it("only creates snapshots for prompts actually linked in Profound", async () => {
+  it("only creates buckets for prompts actually linked in Profound", async () => {
     const undeployedPromptId = await insertUndeployedPrompt(fixture);
 
     await startResultRetrieval(fixture.tenant.brandCtx, {
@@ -315,20 +344,20 @@ describe("retrieval scoping", () => {
     const linkedPromptIds = new Set(links.map((row) => row.promptId));
     expect(linkedPromptIds.size).toBeGreaterThan(0);
 
-    const snapshots = await db
-      .select({ promptId: profoundResultSnapshots.promptId })
-      .from(profoundResultSnapshots)
-      .where(eq(profoundResultSnapshots.brandId, fixture.tenant.brandId));
-    expect(snapshots.length).toBeGreaterThan(0);
+    const buckets = await db
+      .select({ promptId: profoundResultBuckets.promptId })
+      .from(profoundResultBuckets)
+      .where(eq(profoundResultBuckets.brandId, fixture.tenant.brandId));
+    expect(buckets.length).toBeGreaterThan(0);
 
-    for (const snapshot of snapshots) {
-      expect(snapshot.promptId).not.toBe(undeployedPromptId);
-      expect(linkedPromptIds.has(snapshot.promptId ?? "")).toBe(true);
+    for (const bucket of buckets) {
+      expect(bucket.promptId).not.toBe(undeployedPromptId);
+      expect(linkedPromptIds.has(bucket.promptId ?? "")).toBe(true);
     }
   });
 });
 
-describe("snapshot idempotency", () => {
+describe("bucket idempotency", () => {
   it("does not duplicate rows when retrieval is re-run over an overlapping range", async () => {
     await startResultRetrieval(fixture.tenant.brandCtx, {
       startDate: START_DATE,
@@ -338,9 +367,9 @@ describe("snapshot idempotency", () => {
 
     const countAfterFirst = (
       await db
-        .select({ promptId: profoundResultSnapshots.promptId })
-        .from(profoundResultSnapshots)
-        .where(eq(profoundResultSnapshots.brandId, fixture.tenant.brandId))
+        .select({ promptId: profoundResultBuckets.promptId })
+        .from(profoundResultBuckets)
+        .where(eq(profoundResultBuckets.brandId, fixture.tenant.brandId))
     ).length;
     expect(countAfterFirst).toBeGreaterThan(0);
 
@@ -352,9 +381,9 @@ describe("snapshot idempotency", () => {
 
     const countAfterSecond = (
       await db
-        .select({ promptId: profoundResultSnapshots.promptId })
-        .from(profoundResultSnapshots)
-        .where(eq(profoundResultSnapshots.brandId, fixture.tenant.brandId))
+        .select({ promptId: profoundResultBuckets.promptId })
+        .from(profoundResultBuckets)
+        .where(eq(profoundResultBuckets.brandId, fixture.tenant.brandId))
     ).length;
 
     expect(countAfterSecond).toBe(countAfterFirst);
@@ -368,9 +397,9 @@ describe("snapshot idempotency", () => {
     expect((await drainQueue({ workerId: "test" })).failed).toBe(0);
     const countAfterOneDay = (
       await db
-        .select({ id: profoundResultSnapshots.id })
-        .from(profoundResultSnapshots)
-        .where(eq(profoundResultSnapshots.brandId, fixture.tenant.brandId))
+        .select({ id: profoundResultBuckets.id })
+        .from(profoundResultBuckets)
+        .where(eq(profoundResultBuckets.brandId, fixture.tenant.brandId))
     ).length;
 
     await startResultRetrieval(fixture.tenant.brandCtx, {
@@ -380,9 +409,9 @@ describe("snapshot idempotency", () => {
     expect((await drainQueue({ workerId: "test" })).failed).toBe(0);
     const countAfterThreeDays = (
       await db
-        .select({ id: profoundResultSnapshots.id })
-        .from(profoundResultSnapshots)
-        .where(eq(profoundResultSnapshots.brandId, fixture.tenant.brandId))
+        .select({ id: profoundResultBuckets.id })
+        .from(profoundResultBuckets)
+        .where(eq(profoundResultBuckets.brandId, fixture.tenant.brandId))
     ).length;
 
     expect(countAfterThreeDays).toBeGreaterThan(countAfterOneDay);
@@ -406,31 +435,10 @@ describe("performance panel and control comparison", () => {
 
     const { adapter } = await getProfoundAdapter(fixture.tenant.organizationId);
     const modelIds = (await adapter.getModels()).map((model) => model.id);
-    const query = {
-      profoundPromptIds: [link.profoundPromptId],
+    const groundTruth = await groundTruthMetricsFor(
+      fixture.tenant.organizationId,
+      link.profoundPromptId,
       modelIds,
-      startDate: START_DATE,
-      endDate: END_DATE,
-    };
-    const [visibility, citations, sentiment] = await Promise.all([
-      adapter.queryVisibility(query),
-      adapter.queryCitations(query),
-      adapter.querySentiment(query),
-    ]);
-    const answers = await adapter.getPromptAnswers(link.profoundPromptId, {
-      startDate: START_DATE,
-      endDate: END_DATE,
-    });
-    const groundTruth = aggregateMetrics(
-      mergeResultRows(visibility, citations, sentiment, answers).map((row) => ({
-        visibilityScore: row.visibilityScore,
-        shareOfVoice: row.shareOfVoice,
-        mentionCount: row.mentionCount,
-        executions: row.executions,
-        citationCount: row.citationCount,
-        citationShare: row.citationShare,
-        averagePosition: row.averagePosition,
-      })),
     );
 
     const panel = await getPerformancePanel(fixture.tenant.brandCtx, {
@@ -476,27 +484,21 @@ describe("performance panel and control comparison", () => {
     const { adapter } = await getProfoundAdapter(fixture.tenant.organizationId);
     const modelIds = (await adapter.getModels()).map((model) => model.id);
 
-    async function metricsFor(profoundPromptId: string) {
-      const query = {
+    async function rawMetricsFor(profoundPromptId: string) {
+      const query: ProfoundResultQuery = {
+        categoryId: CATEGORY_ID,
         profoundPromptIds: [profoundPromptId],
         modelIds,
         startDate: START_DATE,
         endDate: END_DATE,
       };
-      const [visibility, citations, sentiment] = await Promise.all([
+      const [visibility, citations] = await Promise.all([
         adapter.queryVisibility(query),
         adapter.queryCitations(query),
-        adapter.querySentiment(query),
       ]);
-      const answers = await adapter.getPromptAnswers(profoundPromptId, {
-        startDate: START_DATE,
-        endDate: END_DATE,
-      });
-      return mergeResultRows(visibility, citations, sentiment, answers).map((row) => ({
+      return mergeVisibilityCitations(visibility, citations).map((row) => ({
         visibilityScore: row.visibilityScore,
         shareOfVoice: row.shareOfVoice,
-        mentionCount: row.mentionCount,
-        executions: row.executions,
         citationCount: row.citationCount,
         citationShare: row.citationShare,
         averagePosition: row.averagePosition,
@@ -504,8 +506,8 @@ describe("performance panel and control comparison", () => {
     }
 
     const groundTruth = compareControl(
-      await metricsFor(personaLink.profoundPromptId),
-      await metricsFor(controlLink.profoundPromptId),
+      await rawMetricsFor(personaLink.profoundPromptId),
+      await rawMetricsFor(controlLink.profoundPromptId),
     );
 
     const { pairs } = await getControlComparison(fixture.tenant.brandCtx, {
@@ -532,7 +534,6 @@ describe("performance panel and control comparison", () => {
     } else {
       expect(comparisonRow.deltas.shareOfVoice).toBeCloseTo(groundTruth.deltas.shareOfVoice, 9);
     }
-    expect(comparisonRow.deltas.mentionCount).toBe(groundTruth.deltas.mentionCount);
     expect(comparisonRow.deltas.citationCount).toBe(groundTruth.deltas.citationCount);
 
     expect(comparisonRow.personaOutperforms).toBe(groundTruth.personaOutperforms);

@@ -248,8 +248,10 @@ no_content_action, product_or_positioning_review.
 
 Rules:
 
-1. Every recommendation must reference the Profound prompt IDs and run IDs it
-   is based on.
+1. Every recommendation must reference the Profound prompt IDs and bucket IDs
+   it is based on. A "bucket" is one asset x dimension row from Profound's
+   visibility/citations reporting — there is no per-execution "run" and no
+   vendor-supplied raw answer text; do not refer to either.
 2. Every persona-specific claim must reference evidence IDs.
 3. Do not fabricate search demand figures; use only the supplied data.
 4. State a concrete validation method for each opportunity.
@@ -266,7 +268,7 @@ Prompt set and expected answer elements:
 Profound performance (persona vs control):
 {{profound_performance}}
 
-Profound raw answers, mentions and citations:
+Profound visibility/citation buckets and this product's own answer-coverage estimates:
 {{profound_results}}
 
 Existing page inventory:
@@ -364,6 +366,51 @@ Profound and competitor evidence:
 {{market_evidence}}`,
 };
 
+export const ANSWER_COVERAGE_ESTIMATE: PromptTemplate = {
+  id: "answer_coverage_estimate",
+  version: "1.0.0",
+  purpose:
+    "Self-estimate which of a prompt's expected answer elements a well-informed answer would likely cover.",
+  modelTier: "economical",
+  system: `You estimate answer coverage for an AI-search prompt.
+
+Profound (the AI-visibility vendor this product tracks prompts through) exposes no
+raw text of any answer a model actually gave, so this estimate is this product's own
+judgment, not a vendor-confirmed fact. Everything you return will be labeled to the
+reviewer as a self-computed estimate, never presented as something Profound measured.
+
+Given a prompt, the persona it was written for, its expected answer elements, and
+whatever real evidence is available about how the brand currently performs for it
+(topic, cited domains from Profound retrieval), judge which expected elements a
+well-informed AI answer on this topic would likely already cover, and which it would
+likely still miss.
+
+Rules:
+
+1. Base "covered" only on what the supplied evidence plausibly supports; when in
+   doubt, put the element in "missing" rather than "covered" — this feature exists to
+   find gaps, not to look complete.
+2. Every expected element must appear in exactly one of "covered" or "missing".
+3. Do not invent expected elements that were not supplied.
+4. State confidence as a single 0-1 value reflecting how much real evidence — as
+   opposed to general topic knowledge — supported this judgment. Low confidence when
+   no retrieval evidence exists yet.
+5. Explain the reasoning in one or two sentences, naming which evidence (or the lack
+   of it) drove each coverage call.
+6. Return valid JSON matching the supplied schema.`,
+  user: `Prompt:
+{{prompt_text}}
+
+Persona:
+{{persona}}
+
+Expected answer elements:
+{{expected_answer_elements}}
+
+Real evidence available for this prompt (topic and cited domains from Profound retrieval, if any):
+{{real_evidence}}`,
+};
+
 export const WEB_RESEARCH_PLANNING: PromptTemplate = {
   id: "web_research_planning",
   version: "1.0.0",
@@ -395,6 +442,7 @@ export const TEMPLATES = {
   [SEO_BRIEF.id]: SEO_BRIEF,
   [PAGE_AUDIT.id]: PAGE_AUDIT,
   [WEB_RESEARCH_PLANNING.id]: WEB_RESEARCH_PLANNING,
+  [ANSWER_COVERAGE_ESTIMATE.id]: ANSWER_COVERAGE_ESTIMATE,
 } as const satisfies Record<string, PromptTemplate>;
 
 export type TemplateId = keyof typeof TEMPLATES;

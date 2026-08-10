@@ -67,7 +67,7 @@ function toJson(ctx: BrandContext, rows: OpportunityListRow[]): string {
         recommendation_rationale: row.recommendationRationale,
         persona: row.personaName,
         relevant_profound_prompt_ids: row.relevantProfoundPromptIds,
-        relevant_run_ids: row.relevantRunIds,
+        relevant_bucket_ids: row.relevantBucketIds,
         competitors: row.competitors,
         citation_sources: row.citationSources,
         missing_answer_elements: row.missingAnswerElements,

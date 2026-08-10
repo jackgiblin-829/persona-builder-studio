@@ -254,7 +254,7 @@ export const opportunitySchema = z.object({
   recommendation: z.enum(RECOMMENDATION_TYPES),
   recommendation_rationale: z.string().min(20).max(1500),
   relevant_profound_prompt_ids: z.array(z.string()).max(50),
-  relevant_run_ids: z.array(z.string()).max(50),
+  relevant_bucket_ids: z.array(z.string()).max(50),
   competitors: z.array(z.string().max(160)).max(20),
   citation_sources: z.array(z.string().max(240)).max(30),
   missing_answer_elements: z.array(z.string().max(240)).max(20),
@@ -369,3 +369,19 @@ export const pageAuditSchema = z.object({
 });
 
 export type PageAuditOutput = z.infer<typeof pageAuditSchema>;
+
+// ── Answer-coverage estimate (Phase 2, redesign 2026-08-10) ─────────────────
+//
+// Profound exposes no raw-answer text, so this product estimates coverage of
+// a prompt's expected answer elements itself. Always stored with
+// `dataOrigin: "local"` — a self-computed judgment, never a vendor-confirmed
+// fact — see `src/jobs/handlers/estimate-answer-coverage.ts`.
+
+export const answerCoverageEstimateSchema = z.object({
+  covered: z.array(z.string().max(240)).max(30),
+  missing: z.array(z.string().max(240)).max(30),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().min(10).max(1000),
+});
+
+export type AnswerCoverageEstimateOutput = z.infer<typeof answerCoverageEstimateSchema>;

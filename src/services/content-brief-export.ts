@@ -62,7 +62,7 @@ function toJson(ctx: BrandContext, detail: BriefDetail): string {
     {
       export_format_version: "1.0.0",
       disclaimer:
-        "An evidence-backed SEO and AI-search brief. Every persona-specific recommendation cites evidence ids; every Profound-specific recommendation cites Profound prompt ids, result snapshots or run ids.",
+        "An evidence-backed SEO and AI-search brief. Every persona-specific recommendation cites evidence ids; every Profound-specific recommendation cites Profound prompt ids or result bucket ids.",
       organization_id: ctx.organizationId,
       brand: { id: ctx.brandId, name: ctx.brandName, slug: ctx.brandSlug },
       brief: {
@@ -76,7 +76,7 @@ function toJson(ctx: BrandContext, detail: BriefDetail): string {
         prompt_template_version: detail.promptTemplateVersion,
         evidence_ids: detail.evidenceIds,
         profound_prompt_ids: detail.profoundPromptIds,
-        run_ids: detail.runIds,
+        bucket_ids: detail.bucketIds,
         generated_by: detail.generatedByName,
         approved_by: detail.approvedByName,
       },

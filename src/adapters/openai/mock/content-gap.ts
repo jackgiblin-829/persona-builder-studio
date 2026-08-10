@@ -22,7 +22,7 @@ export type ContentGapMockCandidate = {
   promptText: string;
   topic: string;
   personaName: string;
-  runIds: string[];
+  bucketIds: string[];
   competitors: string[];
   citationSources: string[];
   existingPageUrl: string | null;
@@ -56,7 +56,7 @@ function toOpportunity(brandName: string, candidate: ContentGapMockCandidate): O
     recommendation: analysis.recommendation,
     recommendation_rationale: analysis.rationale,
     relevant_profound_prompt_ids: [candidate.profoundPromptId],
-    relevant_run_ids: candidate.runIds,
+    relevant_bucket_ids: candidate.bucketIds,
     competitors: candidate.competitors,
     citation_sources: candidate.citationSources,
     missing_answer_elements: candidate.signal.missingElements,
@@ -118,7 +118,7 @@ function buildPerformanceGap(brandName: string, candidate: ContentGapMockCandida
     candidate.competitors.length > 0
       ? ` while ${candidate.competitors.slice(0, 3).join(", ")} appear in the same answers`
       : "";
-  return `Prompt "${candidate.promptText.slice(0, 200)}" (Profound prompt ${candidate.profoundPromptId}): ${brandName} is classified "${candidate.signal.classification}"${competitorNote}, across run(s) ${candidate.runIds.slice(0, 5).join(", ") || "none recorded"}.`.slice(
+  return `Prompt "${candidate.promptText.slice(0, 200)}" (Profound prompt ${candidate.profoundPromptId}): ${brandName} is classified "${candidate.signal.classification}"${competitorNote}, across bucket(s) ${candidate.bucketIds.slice(0, 5).join(", ") || "none recorded"}.`.slice(
     0,
     1500,
   );

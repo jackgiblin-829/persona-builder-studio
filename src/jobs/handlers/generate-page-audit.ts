@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   auditFindings,
@@ -7,14 +7,14 @@ import {
   personaVersions,
   personas,
   profoundPromptLinks,
-  profoundResultSnapshots,
+  promptAnswerCoverageEstimates,
   promptSetVersions,
   prompts,
 } from "@/db/schema";
 import { getOpenAIAdapter } from "@/adapters/openai";
 import type { PageAuditMockContext } from "@/adapters/openai/mock/page-audit";
+import { hashExpectedElements } from "@/lib/answer-coverage";
 import { sanitizeAuditFindings } from "@/lib/content-traceability";
-import { detectMissingElements } from "@/lib/profound-results";
 import { AppError } from "@/lib/errors";
 import { newId, ID_PREFIXES } from "@/lib/ids";
 import { loadFieldsWithEvidence } from "@/services/personas";
@@ -144,34 +144,32 @@ registerJob(JOB_TYPES.generatePageAudit, async ({ job }) => {
           : [];
       relatedProfoundPromptIds = links.map((l) => l.profoundPromptId);
 
-      const snapshots =
+      // "Missing expected answer elements" is no longer a substring match
+      // against a Profound raw answer (the vendor has none) — it is read from
+      // this product's own self-computed `prompt_answer_coverage_estimates`
+      // (see `src/jobs/handlers/estimate-answer-coverage.ts`), keyed on each
+      // prompt's *current* expected-elements hash so a stale estimate from
+      // before the prompt was edited is never surfaced. A prompt with no
+      // estimate yet (the job hasn't run or hasn't caught up) contributes
+      // nothing here rather than blocking the audit.
+      const estimateRows =
         relatedPromptIds.length > 0
           ? await db
               .select()
-              .from(profoundResultSnapshots)
-              .where(
-                and(
-                  eq(profoundResultSnapshots.brandId, brandId),
-                  inArray(profoundResultSnapshots.promptId, relatedPromptIds),
-                ),
-              )
-              .orderBy(desc(profoundResultSnapshots.runDate))
+              .from(promptAnswerCoverageEstimates)
+              .where(inArray(promptAnswerCoverageEstimates.promptId, relatedPromptIds))
           : [];
-
-      const latestByPrompt = new Map<string, (typeof snapshots)[number]>();
-      for (const snapshot of snapshots) {
-        if (!snapshot.promptId || latestByPrompt.has(snapshot.promptId)) continue;
-        latestByPrompt.set(snapshot.promptId, snapshot);
-      }
+      const estimateByKey = new Map(
+        estimateRows.map((estimate) => [
+          `${estimate.promptId}::${estimate.expectedElementsHash}`,
+          estimate,
+        ]),
+      );
       const missing = new Set<string>();
       for (const prompt of setPrompts) {
-        const snapshot = latestByPrompt.get(prompt.id);
-        if (!snapshot) continue;
-        for (const element of detectMissingElements(prompt.expectedAnswerElements, {
-          rawAnswer: snapshot.rawAnswer,
-        })) {
-          missing.add(element);
-        }
+        const hash = hashExpectedElements(prompt.expectedAnswerElements);
+        const estimate = estimateByKey.get(`${prompt.id}::${hash}`);
+        for (const element of estimate?.missing ?? []) missing.add(element);
       }
       missingAnswerElements = [...missing].slice(0, 10);
     }

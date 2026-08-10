@@ -6,7 +6,7 @@ import {
   dataSources,
   evidenceRecords,
   pageInventory,
-  profoundResultSnapshots,
+  profoundResultBuckets,
   promptSets,
   prompts,
   users,
@@ -313,14 +313,15 @@ export async function runSeed(opts: { fresh: boolean }): Promise<SeedSummary> {
 
   const snapshots = await db
     .select()
-    .from(profoundResultSnapshots)
-    .where(eq(profoundResultSnapshots.brandId, brandId));
+    .from(profoundResultBuckets)
+    .where(eq(profoundResultBuckets.brandId, brandId));
+  // Seed data doesn't request competitor asset scope, so `competitorVisible`
+  // is honestly `null` here — never guessed.
   const classifications = snapshots.map((snapshot) =>
     classifyResult({
-      brandMentioned: snapshot.brandMentioned ?? false,
-      mentionCount: snapshot.mentionCount ?? 0,
+      visibilityScore: snapshot.visibilityScore,
       shareOfVoice: snapshot.shareOfVoice,
-      mentions: (snapshot.mentions as { entity: string; share: number }[]) ?? [],
+      competitorShareOfVoice: null,
     }),
   );
 
@@ -531,11 +532,18 @@ export async function runSeed(opts: { fresh: boolean }): Promise<SeedSummary> {
     "prompt duplicate warnings": counts.promptWarnings,
     "profound category mapped": counts.profoundCategoryStatus ?? "not mapped",
     "profound prompts linked": counts.profoundPromptsLinked,
-    "profound result snapshots": snapshots.length,
-    "profound brand-absent snapshots": classifications.filter((c) => c === "brand_absent").length,
-    "profound competitor-dominated snapshots": classifications.filter(
-      (c) => c === "competitor_dominated",
+    "profound result buckets": snapshots.length,
+    "profound brand-absent buckets": classifications.filter(
+      (c) => c.classification === "brand_absent",
     ).length,
+    // Seed retrieval never requests competitor asset scope, so this is
+    // honestly "not measured" rather than a zero that could be mistaken for
+    // "checked and found none".
+    "profound competitor-visible buckets": classifications.every(
+      (c) => c.competitorVisible === null,
+    )
+      ? "not measured (no competitor asset scope requested)"
+      : classifications.filter((c) => c.competitorVisible === true).length,
     "page inventory rows": counts.pageInventory,
     "content opportunities generated": opportunitiesGenerated,
     "content opportunities approved": opportunitiesApproved,

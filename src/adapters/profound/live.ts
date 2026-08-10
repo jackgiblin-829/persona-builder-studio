@@ -7,7 +7,6 @@ import type {
   ProfoundAccountSentimentRow,
   ProfoundAccountVisibilityRow,
   ProfoundAdapter,
-  ProfoundAnswerRow,
   ProfoundAsset,
   ProfoundCategory,
   ProfoundCitationsRow,
@@ -16,7 +15,6 @@ import type {
   ProfoundCreateResponse,
   ProfoundExistingPrompt,
   ProfoundItemOutcome,
-  ProfoundMentionRow,
   ProfoundModel,
   ProfoundOrganization,
   ProfoundPersona,
@@ -49,18 +47,19 @@ import type {
  *   client-reference echo — it returns aggregate counts and a flat list of
  *   created prompt objects. This file's idempotency/outcome-tracking model
  *   (`normalizeOutcome`, per-item `client_reference` matching) cannot be
- *   satisfied by the real API and needs a redesign, not a path fix.
- * - `queryVisibility`/`queryCitations`/`querySentiment` (and the account
- *   variants): the real endpoints are `POST /v2/reports/{visibility,
- *   citations,sentiment}`, scoped by `category_id` + `group_by`, returning
- *   asset/bucket summary rows (visibility_score, share_of_voice,
- *   average_position, citation counts, sentiment percentages). There is no
- *   `run_id`, `mention_count`, `executions`, `brand_mentioned`, `mentions`,
- *   or raw answer text anywhere in that shape — the `profound_result_
- *   snapshots` DB schema and this job's result model were built around
- *   invented per-execution data that the real API does not expose. Do not
- *   patch this by guessing a field mapping: it needs a schema/pipeline
- *   redesign decision, tracked as a known gap rather than silently faked.
+ *   satisfied by the real API and needs a redesign, not a path fix. Moot in
+ *   practice per ADR-013 (deployment is export-only; nothing in `src/` calls
+ *   this) but left as a known, documented limitation rather than silently
+ *   assumed correct.
+ *
+ * `queryVisibility`/`queryCitations`/`querySentiment` and the account
+ * variants were rewritten 2026-08-10 against the real, verified
+ * `POST /v2/reports/{visibility,citations,sentiment}` endpoints — see
+ * docs/integrations.md for sources. These are category-scoped, bucketed by
+ * whatever `group_by` dimensions are requested (never a per-execution "run"),
+ * and every returned field is a direct read of a real vendor field — nothing
+ * here is a `run_id`, `mention_count`, `executions`, `brand_mentioned`, or
+ * raw answer text, because none of those exist in the real API.
  *
  * Two behaviours here are not negotiable regardless of what the documentation
  * turns out to say:
@@ -77,6 +76,8 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const PAGE_LIMIT = 200;
 /** A category with more prompts than this is a configuration problem, not a page. */
 const MAX_PAGES = 50;
+/** Documented max `limit` for `/v2/reports/*` endpoints (docs.tryprofound.com). */
+const REPORT_PAGE_LIMIT = 50;
 
 export class LiveProfoundAdapter implements ProfoundAdapter {
   readonly mode = "live" as const;
@@ -231,7 +232,7 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
 
   async createPrompts(request: ProfoundCreateRequest): Promise<ProfoundCreateResponse> {
     const body = await this.post(
-      `/v1/categories/${encodeURIComponent(request.categoryId)}/prompts`,
+      `/v1/org/categories/${encodeURIComponent(request.categoryId)}/prompts`,
       {
         dry_run: request.dryRun,
         prompts: request.prompts,
@@ -282,144 +283,276 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
   }
 
   // ── Reporting (§25) ────────────────────────────────────────────────────────
+  //
+  // All three calls are category-scoped, not prompt-list-scoped, but the real
+  // API's generic `filter` tree accepts `{field: "prompt", op: "in", value:
+  // [...]}` — verified live 2026-08-10, confirmed server-applied (echoed back
+  // in the response's `info.filter`). Without it, a category with hundreds of
+  // prompts (common — verified against a real 917-prompt category) would
+  // require paginating the *entire* category's results before filtering
+  // client-side down to the handful this product tracks, which does not
+  // terminate within any sane page cap. The client-side filter below stays as
+  // a defensive backstop, not the primary scoping mechanism. Every field
+  // mapped below is a direct read of a real vendor field.
 
   async queryVisibility(query: ProfoundResultQuery): Promise<ProfoundVisibilityRow[]> {
-    const body = await this.post(
-      "/v1/reports/visibility",
-      reportRequestBody(query),
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/visibility",
+      {
+        category_id: query.categoryId,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        group_by: ["date", "model", "topic", "region", "persona", "prompt"],
+        scope: query.competitorAssets && query.competitorAssets.length > 0 ? "all" : "owned",
+        filter: { field: "prompt", op: "in", value: query.profoundPromptIds },
+      },
+      visibilityRowSchema,
       "queryVisibility",
-      false,
     );
-    return parse(listOf(visibilityRowSchema), body, "queryVisibility").map((row) => ({
-      profoundPromptId: row.prompt_id,
-      runId: row.run_id,
-      runDate: row.run_date,
-      modelId: row.model_id,
-      model: row.model ?? null,
-      region: row.region ?? null,
-      asset: row.asset ?? null,
-      topic: row.topic ?? null,
-      profoundPersona: row.persona ?? null,
-      tags: row.tags ?? [],
-      visibilityScore: row.visibility_score ?? null,
-      shareOfVoice: row.share_of_voice ?? null,
-      mentionCount: row.mention_count ?? 0,
-      executions: row.executions ?? 0,
-      averagePosition: row.average_position ?? null,
-      brandMentioned: row.brand_mentioned ?? false,
-      mentions: normalizeMentions(row.mentions),
-    }));
+
+    const promptIds = new Set(query.profoundPromptIds);
+    return rows
+      .filter((row) => row.prompt?.id && promptIds.has(row.prompt.id))
+      .map((row) => ({
+        profoundPromptId: row.prompt?.id ?? null,
+        bucketDate: row.date ?? query.startDate,
+        modelId: row.model?.id ?? "",
+        model: row.model?.name ?? null,
+        topicId: row.topic?.id ?? null,
+        topic: row.topic?.name ?? null,
+        regionId: row.region?.id ?? null,
+        region: row.region?.name ?? null,
+        personaId: row.persona?.id ?? null,
+        profoundPersona: row.persona?.name ?? null,
+        asset: row.asset?.name ?? "",
+        assetOwned: row.asset?.owned ?? null,
+        rank: row.rank ?? null,
+        visibilityScore: row.visibility_score ?? null,
+        shareOfVoice: row.share_of_voice ?? null,
+        averagePosition: row.average_position ?? null,
+      }));
   }
 
   async queryCitations(query: ProfoundResultQuery): Promise<ProfoundCitationsRow[]> {
-    const body = await this.post(
-      "/v1/reports/citations",
-      reportRequestBody(query),
+    // Citations' group_by is far more restrictive than visibility's: the real
+    // API only accepts one dimension (or topic+model), optionally plus date —
+    // verified live 2026-08-10 (a wider request 422s with "Unsupported
+    // group_by combination"). "prompt" is the one dimension this product
+    // needs for per-prompt attribution, so model/topic/region/persona are not
+    // available simultaneously here — they stay null on the mapped row.
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/citations",
+      {
+        category_id: query.categoryId,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        entity: "domain",
+        group_by: ["prompt", "date"],
+        filter: { field: "prompt", op: "in", value: query.profoundPromptIds },
+      },
+      citationsRowSchema,
       "queryCitations",
-      false,
     );
-    return parse(listOf(citationsRowSchema), body, "queryCitations").map((row) => ({
-      profoundPromptId: row.prompt_id,
-      runId: row.run_id,
-      modelId: row.model_id,
-      citationCount: row.citation_count ?? 0,
-      citationShare: row.citation_share ?? null,
-      citations: row.citations ?? [],
-      searchQueries: row.search_queries ?? [],
-    }));
+
+    const promptIds = new Set(query.profoundPromptIds);
+    return rows
+      .filter((row) => row.prompt?.id && promptIds.has(row.prompt.id) && row.domain)
+      .map((row) => ({
+        profoundPromptId: row.prompt?.id ?? null,
+        bucketDate: row.date ?? query.startDate,
+        domain: row.domain as string,
+        count: row.count ?? 0,
+        citationShare: row.citation_share ?? null,
+        rank: row.rank ?? null,
+      }));
   }
 
   async querySentiment(query: ProfoundResultQuery): Promise<ProfoundSentimentRow[]> {
-    const body = await this.post(
-      "/v1/reports/sentiment",
-      reportRequestBody(query),
+    if (!query.asset) {
+      throw new VendorError(
+        "profound",
+        "querySentiment",
+        "Sentiment reporting requires an asset (brand name) to analyze.",
+        { retryable: false },
+      );
+    }
+    // Sentiment's group_by is capped at 2 dimensions (docs.tryprofound.com),
+    // so a single call cannot also break out by model/topic/region — this
+    // trades per-model sentiment granularity for prompt-level attribution.
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/sentiment",
+      {
+        category_id: query.categoryId,
+        asset: query.asset,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        group_by: ["date", "prompt"],
+        filter: { field: "prompt", op: "in", value: query.profoundPromptIds },
+      },
+      sentimentRowSchema,
       "querySentiment",
-      false,
     );
-    return parse(listOf(sentimentRowSchema), body, "querySentiment").map((row) => ({
-      profoundPromptId: row.prompt_id,
-      runId: row.run_id,
-      modelId: row.model_id,
-      sentimentThemes: row.sentiment_themes ?? [],
-    }));
-  }
 
-  async getPromptAnswers(
-    profoundPromptId: string,
-    range: { startDate: string; endDate: string },
-  ): Promise<ProfoundAnswerRow[]> {
-    const query = new URLSearchParams({ start_date: range.startDate, end_date: range.endDate });
-    const body = await this.get(
-      `/v1/prompts/${encodeURIComponent(profoundPromptId)}/answers?${query.toString()}`,
-      "getPromptAnswers",
-    );
-    return parse(listOf(answerRowSchema), body, "getPromptAnswers").map((row) => ({
-      profoundPromptId,
-      runId: row.run_id,
-      modelId: row.model_id,
-      rawAnswer: row.raw_answer ?? "",
-    }));
+    const promptIds = new Set(query.profoundPromptIds);
+    return rows
+      .filter((row) => row.prompt?.id && promptIds.has(row.prompt.id))
+      .map((row) => ({
+        profoundPromptId: row.prompt?.id ?? null,
+        asset: query.asset as string,
+        bucketDate: row.date ?? null,
+        modelId: row.model?.id ?? null,
+        model: row.model?.name ?? null,
+        topicId: row.topic?.id ?? null,
+        topic: row.topic?.name ?? null,
+        regionId: row.region?.id ?? null,
+        region: row.region?.name ?? null,
+        personaId: row.persona?.id ?? null,
+        profoundPersona: row.persona?.name ?? null,
+        tag: row.tag?.name ?? null,
+        theme: row.theme?.name ?? null,
+        claim: row.claim?.name ?? null,
+        profoundRun: row.run?.name ?? null,
+        competitor: row.competitor?.name ?? null,
+        positiveSentiment: row.positive_sentiment ?? null,
+        negativeSentiment: row.negative_sentiment ?? null,
+        occurrence: row.occurrence ?? null,
+        citedWebsites: row.cited_websites ?? [],
+        rank: row.rank ?? null,
+      }));
   }
 
   // ── Account-level reporting ─────────────────────────────────────────────
   //
-  // @unverified — assumed to mirror the prompt-scoped reports at
-  // `/v1/reports/*` but with `category_id`/`scope: "all"` in place of an
-  // explicit `prompt_ids` list, per the account/category-scoped semantics
-  // this product's Profound MCP tool surface documents. This is the
-  // least-certain assumption in this adapter — re-verify first before
-  // enabling live mode for account-evidence pulls.
+  // Same real endpoints as above, grouped by (date, topic) only and without
+  // the prompt-id filter — this is the brand's whole tracked category, not
+  // this product's own deployed prompts, used as an evidence source (§ account
+  // evidence pull) rather than for tracking specific prompts.
 
   async queryAccountVisibility(
     query: ProfoundAccountReportQuery,
   ): Promise<ProfoundAccountVisibilityRow[]> {
-    const body = await this.post(
-      "/v1/reports/visibility",
-      accountReportRequestBody(query),
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/visibility",
+      {
+        category_id: query.categoryId,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        group_by: ["date", "topic"],
+        scope: "owned",
+      },
+      visibilityRowSchema,
       "queryAccountVisibility",
-      false,
     );
-    return parse(listOf(accountVisibilityRowSchema), body, "queryAccountVisibility").map((row) => ({
-      topic: row.topic,
-      date: row.date,
-      visibilityScore: row.visibility_score ?? 0,
-      shareOfVoice: row.share_of_voice ?? 0,
-      mentionCount: row.mention_count ?? 0,
-    }));
+    return rows
+      .filter((row) => row.topic?.name && row.date)
+      .map((row) => ({
+        topic: row.topic?.name as string,
+        date: row.date as string,
+        visibilityScore: row.visibility_score ?? 0,
+        shareOfVoice: row.share_of_voice ?? 0,
+      }));
   }
 
   async queryAccountCitations(
     query: ProfoundAccountReportQuery,
   ): Promise<ProfoundAccountCitationsRow[]> {
-    const body = await this.post(
-      "/v1/reports/citations",
-      accountReportRequestBody(query),
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/citations",
+      {
+        category_id: query.categoryId,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        entity: "domain",
+        group_by: ["date", "topic"],
+      },
+      citationsRowSchema,
       "queryAccountCitations",
-      false,
     );
-    return parse(listOf(accountCitationsRowSchema), body, "queryAccountCitations").map((row) => ({
-      topic: row.topic,
-      date: row.date,
-      citationCount: row.citation_count ?? 0,
-      citationShare: row.citation_share ?? null,
-      topDomains: row.top_domains ?? [],
-    }));
+
+    // The API returns one row per (topic, date, domain); aggregate to one row
+    // per (topic, date) since that's this account-evidence signal's grain.
+    const byKey = new Map<string, ProfoundAccountCitationsRow>();
+    for (const row of rows) {
+      if (!row.topic?.name || !row.date) continue;
+      const key = `${row.topic.name}::${row.date}`;
+      const existing = byKey.get(key) ?? {
+        topic: row.topic.name,
+        date: row.date,
+        citationCount: 0,
+        citationShare: null,
+        topDomains: [],
+      };
+      existing.citationCount += row.count ?? 0;
+      if (row.domain && !existing.topDomains.includes(row.domain)) {
+        existing.topDomains.push(row.domain);
+      }
+      byKey.set(key, existing);
+    }
+    return [...byKey.values()];
   }
 
   async queryAccountSentiment(
     query: ProfoundAccountReportQuery,
   ): Promise<ProfoundAccountSentimentRow[]> {
-    const body = await this.post(
-      "/v1/reports/sentiment",
-      accountReportRequestBody(query),
+    if (!query.asset) {
+      throw new VendorError(
+        "profound",
+        "queryAccountSentiment",
+        "Sentiment reporting requires an asset (brand name) to analyze.",
+        { retryable: false },
+      );
+    }
+    const rows = await this.paginatedReportsPost(
+      "/v2/reports/sentiment",
+      {
+        category_id: query.categoryId,
+        asset: query.asset,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        group_by: ["date", "topic"],
+      },
+      sentimentRowSchema,
       "queryAccountSentiment",
-      false,
     );
-    return parse(listOf(accountSentimentRowSchema), body, "queryAccountSentiment").map((row) => ({
-      topic: row.topic,
-      date: row.date,
-      sentimentThemes: row.sentiment_themes ?? [],
-    }));
+    return rows
+      .filter((row) => row.topic?.name && row.date)
+      .map((row) => ({
+        topic: row.topic?.name as string,
+        date: row.date as string,
+        positiveSentiment: row.positive_sentiment ?? null,
+        negativeSentiment: row.negative_sentiment ?? null,
+      }));
+  }
+
+  /** Pages a `/v2/reports/*` POST endpoint via `info.next_cursor` until exhausted. */
+  private async paginatedReportsPost<T extends z.ZodTypeAny>(
+    path: string,
+    baseBody: Record<string, unknown>,
+    rowSchema: T,
+    operation: string,
+  ): Promise<z.infer<T>[]> {
+    const out: z.infer<T>[] = [];
+    let cursor: string | null = null;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const body = await this.post(
+        path,
+        { ...baseBody, limit: REPORT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
+        operation,
+        false,
+      );
+      const parsed = parse(reportEnvelopeSchema(rowSchema), body, operation);
+      out.push(...parsed.data);
+      cursor = parsed.info.next_cursor ?? null;
+      if (!cursor) return out;
+    }
+
+    throw new VendorError(
+      "profound",
+      operation,
+      `Report pagination did not terminate after ${MAX_PAGES} pages.`,
+      { retryable: false },
+    );
   }
 
   // ── HTTP ──────────────────────────────────────────────────────────────────
@@ -550,107 +683,65 @@ const promptPageSchema = z.object({
   data: z.array(existingPromptSchema),
 });
 
-/** `POST /v1/reports/visibility` and `/citations` and `/sentiment` share this request shape. */
-function reportRequestBody(query: ProfoundResultQuery) {
-  return {
-    prompt_ids: query.profoundPromptIds,
-    model_ids: query.modelIds,
-    start_date: query.startDate,
-    end_date: query.endDate,
-  };
-}
+/** `{id, name}` reference on a v2 report row (model/topic/region/prompt/persona/tag/theme/claim/run/competitor). */
+const reportDimensionSchema = z
+  .object({ id: z.string().nullish(), name: z.string().nullish() })
+  .nullish();
 
-function accountReportRequestBody(query: ProfoundAccountReportQuery) {
-  return {
-    category_id: query.categoryId,
-    scope: "all",
-    group_by: "topic",
-    start_date: query.startDate,
-    end_date: query.endDate,
-  };
-}
-
-const accountVisibilityRowSchema = z.object({
-  topic: z.string(),
-  date: z.string(),
-  visibility_score: z.number().nullish(),
-  share_of_voice: z.number().nullish(),
-  mention_count: z.number().nullish(),
-});
-
-const accountCitationsRowSchema = z.object({
-  topic: z.string(),
-  date: z.string(),
-  citation_count: z.number().nullish(),
-  citation_share: z.number().nullish(),
-  top_domains: z.array(z.string()).nullish(),
-});
-
-const accountSentimentRowSchema = z.object({
-  topic: z.string(),
-  date: z.string(),
-  sentiment_themes: z
-    .array(z.object({ theme: z.string(), sentiment: z.enum(["positive", "neutral", "negative"]) }))
-    .nullish(),
-});
-
-const mentionSchema = z.object({
-  entity: z.string(),
-  mention_count: z.number().nullish(),
-  share: z.number().nullish(),
-});
-
-function normalizeMentions(
-  rows: z.infer<typeof mentionSchema>[] | null | undefined,
-): ProfoundMentionRow[] {
-  return (rows ?? []).map((row) => ({
-    entity: row.entity,
-    mentionCount: row.mention_count ?? 0,
-    share: row.share ?? 0,
-  }));
+/** `{info: {..., next_cursor}, data: [...]}` — the envelope every `/v2/reports/*` endpoint shares. */
+function reportEnvelopeSchema<T extends z.ZodTypeAny>(rowSchema: T) {
+  return z.object({
+    info: z.object({ next_cursor: z.string().nullish() }).passthrough(),
+    data: z.array(rowSchema),
+  });
 }
 
 const visibilityRowSchema = z.object({
-  prompt_id: z.string(),
-  run_id: z.string(),
-  run_date: z.string(),
-  model_id: z.string(),
-  model: z.string().nullish(),
-  region: z.string().nullish(),
-  asset: z.string().nullish(),
-  topic: z.string().nullish(),
-  persona: z.string().nullish(),
-  tags: z.array(z.string()).nullish(),
+  asset: z.object({ name: z.string().nullish(), owned: z.boolean().nullish() }).nullish(),
+  rank: z.number().nullish(),
+  date: z.string().nullish(),
+  model: reportDimensionSchema,
+  topic: reportDimensionSchema,
+  region: reportDimensionSchema,
+  prompt: reportDimensionSchema,
+  persona: reportDimensionSchema,
   visibility_score: z.number().nullish(),
   share_of_voice: z.number().nullish(),
-  mention_count: z.number().nullish(),
-  executions: z.number().nullish(),
   average_position: z.number().nullish(),
-  brand_mentioned: z.boolean().nullish(),
-  mentions: z.array(mentionSchema).nullish(),
 });
 
 const citationsRowSchema = z.object({
-  prompt_id: z.string(),
-  run_id: z.string(),
-  model_id: z.string(),
-  citation_count: z.number().nullish(),
+  domain: z.string().nullish(),
+  page: z.string().nullish(),
+  rank: z.number().nullish(),
+  date: z.string().nullish(),
+  model: reportDimensionSchema,
+  topic: reportDimensionSchema,
+  region: reportDimensionSchema,
+  persona: reportDimensionSchema,
+  prompt: reportDimensionSchema,
+  count: z.number().nullish(),
   citation_share: z.number().nullish(),
-  citations: z.array(z.record(z.string(), z.unknown())).nullish(),
-  search_queries: z.array(z.string()).nullish(),
+  first_cited_at: z.string().nullish(),
 });
 
 const sentimentRowSchema = z.object({
-  prompt_id: z.string(),
-  run_id: z.string(),
-  model_id: z.string(),
-  sentiment_themes: z.array(z.record(z.string(), z.unknown())).nullish(),
-});
-
-const answerRowSchema = z.object({
-  run_id: z.string(),
-  model_id: z.string(),
-  raw_answer: z.string().nullish(),
+  date: z.string().nullish(),
+  model: reportDimensionSchema,
+  topic: reportDimensionSchema,
+  region: reportDimensionSchema,
+  prompt: reportDimensionSchema,
+  persona: reportDimensionSchema,
+  tag: reportDimensionSchema,
+  theme: reportDimensionSchema,
+  claim: reportDimensionSchema,
+  run: reportDimensionSchema,
+  competitor: reportDimensionSchema,
+  positive_sentiment: z.number().nullish(),
+  negative_sentiment: z.number().nullish(),
+  occurrence: z.number().nullish(),
+  cited_websites: z.array(z.string()).nullish(),
+  rank: z.number().nullish(),
 });
 
 const createResponseSchema = z.object({

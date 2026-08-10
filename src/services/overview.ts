@@ -12,7 +12,7 @@ import {
   personas,
   profoundCategoryMappings,
   profoundPromptLinks,
-  profoundResultSnapshots,
+  profoundResultBuckets,
   promptSetVersions,
   prompts,
   segmentCandidates,
@@ -116,8 +116,8 @@ export async function getWorkflowStatus(ctx: BrandContext): Promise<{
       .where(eq(profoundCategoryMappings.brandId, brandId)),
     db
       .select({ n: count() })
-      .from(profoundResultSnapshots)
-      .where(eq(profoundResultSnapshots.brandId, brandId)),
+      .from(profoundResultBuckets)
+      .where(eq(profoundResultBuckets.brandId, brandId)),
     db
       .select({ n: count() })
       .from(contentOpportunities)

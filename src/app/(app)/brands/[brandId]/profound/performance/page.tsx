@@ -98,14 +98,14 @@ export default async function ProfoundPerformancePage({
     <>
       <PageHeader
         title="Persona performance"
-        description="Retrieval only ever covers prompts this brand has actually deployed to Profound. Snapshots are immutable — retrieving an overlapping range again never changes a run once stored."
+        description="Retrieval only ever covers prompts this brand has actually deployed to Profound. Buckets are immutable — retrieving an overlapping range again never changes a bucket once stored."
         breadcrumb={`${ctx.brandName} / Profound / Performance`}
       />
 
       <Card className="mb-4">
         <CardHeader
           title="Retrieve results"
-          description="Pulls visibility, citations, sentiment and raw answers for every linked prompt over the range below."
+          description="Pulls visibility, citations and sentiment for every linked prompt over the range below."
         />
         <div className="px-4 py-3">
           {canRetrieve ? (
@@ -165,8 +165,8 @@ export default async function ProfoundPerformancePage({
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Prompts with results" value={promptCount} />
         <Stat label="Brand-absent" value={panel.brandAbsentCount} />
-        <Stat label="Competitor-dominated" value={panel.competitorDominatedCount} />
-        <Stat label="Missing expected elements" value={panel.missingElementsCount} />
+        <Stat label="Competitor visible" value={panel.competitorVisibleCount} />
+        <Stat label="Missing elements (estimated)" value={panel.missingElementsCount} />
       </div>
 
       {panel.personas.length === 0 ? (
@@ -181,7 +181,7 @@ export default async function ProfoundPerformancePage({
           <Card key={group.personaId} className="mb-4">
             <CardHeader
               title={group.personaName}
-              description={`${group.metrics.runCount} run${group.metrics.runCount === 1 ? "" : "s"} · avg visibility ${formatPercent(group.metrics.visibilityScore)} · avg share of voice ${formatPercent(group.metrics.shareOfVoice)}`}
+              description={`${group.metrics.bucketCount} bucket${group.metrics.bucketCount === 1 ? "" : "s"} · avg visibility ${formatPercent(group.metrics.visibilityScore)} · avg share of voice ${formatPercent(group.metrics.shareOfVoice)}`}
             />
             <ul className="divide-y divide-surface-border">
               {group.prompts.map((prompt) => (
@@ -195,23 +195,30 @@ export default async function ProfoundPerformancePage({
                         {prompt.classification === "brand_absent" ? (
                           <Badge tone="danger">Brand absent</Badge>
                         ) : null}
-                        {prompt.classification === "competitor_dominated" ? (
-                          <Badge tone="warn">Competitor-dominated</Badge>
+                        {prompt.competitorVisible === true ? (
+                          <Badge tone="warn">Competitor visible</Badge>
+                        ) : prompt.competitorVisible === null ? (
+                          <Badge
+                            tone="neutral"
+                            title="Competitor asset scope was not requested for this retrieval"
+                          >
+                            Competitor visibility not measured
+                          </Badge>
                         ) : null}
                         {prompt.missingElements.length > 0 ? (
-                          <Badge tone="warn">
+                          <Badge tone="warn" title="Estimated by this app, not confirmed by Profound">
                             {prompt.missingElements.length} missing element
-                            {prompt.missingElements.length === 1 ? "" : "s"}
+                            {prompt.missingElements.length === 1 ? "" : "s"} (estimated)
                           </Badge>
                         ) : null}
                       </div>
                       <p className="text-sm text-ink">{prompt.promptText}</p>
                       <p className="mt-1 text-xs text-ink-subtle">
                         Visibility {formatPercent(prompt.metrics.visibilityScore)} · Share of voice{" "}
-                        {formatPercent(prompt.metrics.shareOfVoice)} · Mentions{" "}
-                        {prompt.metrics.mentionCount} · Citations {prompt.metrics.citationCount} ·{" "}
-                        {prompt.metrics.runCount} run{prompt.metrics.runCount === 1 ? "" : "s"} ·
-                        Profound id {prompt.profoundPromptId}
+                        {formatPercent(prompt.metrics.shareOfVoice)} · Citations{" "}
+                        {prompt.metrics.citationCount} · {prompt.metrics.bucketCount} bucket
+                        {prompt.metrics.bucketCount === 1 ? "" : "s"} · Profound id{" "}
+                        {prompt.profoundPromptId}
                       </p>
                     </div>
                     <ButtonLink

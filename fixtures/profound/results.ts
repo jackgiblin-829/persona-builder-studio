@@ -1,76 +1,57 @@
 /**
  * Synthetic Profound result history (§25).
  *
- * Like `fixtures/profound/account.ts`, this models a vendor's history rather
- * than returning a canned answer: one run per UTC calendar day, per prompt,
- * per model, generated deterministically from `(profoundPromptId, modelId,
- * date)` so retrieving the same window twice produces byte-identical rows —
- * that determinism is what makes snapshot idempotency testable rather than
- * merely asserted.
+ * Redesigned 2026-08-10 to match the real bucket-shaped v2 reporting API
+ * (see `src/adapters/profound/live.ts`) instead of the invented per-execution
+ * "run" model this file used to generate. One bucket per UTC calendar day,
+ * per prompt, per model, per asset, generated deterministically from
+ * `(profoundPromptId, modelId, date, asset)` so retrieving the same window
+ * twice produces byte-identical rows — that determinism is what makes bucket
+ * idempotency testable rather than merely asserted. Every field here has a
+ * direct analog in the real API; there is no mention count, brand-mentioned
+ * flag, or raw answer text (see `estimate-answer-coverage.ts` for that
+ * capability's honest, self-computed replacement).
  *
- * Three outcomes are manufactured on purpose, keyed off the prompt id alone so
- * they are stable across every date and model for that prompt:
- *
- * - Roughly one prompt in seven is **chronically brand-absent** — the brand
- *   never appears, though competitors do. A real "nobody mentions us for this
- *   question" prompt looks exactly like this over any date range.
- * - Roughly one prompt in five (of the rest) is **competitor-dominated** — the
- *   brand is mentioned, but a named competitor holds a larger share of voice.
- * - Every other prompt is unremarkable: the brand is mentioned and leads.
- *
- * The raw answer text is generic synthetic prose, not text engineered to
- * satisfy any particular prompt's `expected_answer_elements`. That is
- * deliberate: a mock vendor has no way to know what a real model would say, so
- * pretending its answers cover a persona's expected elements would be more
- * misleading than an honest "most elements are reported missing against mock
- * data" (see docs/progress.md, Milestone 6, Known limitations).
+ * One outcome is still manufactured on purpose, keyed off the prompt id alone
+ * so it is stable across every date and model for that prompt: roughly one
+ * prompt in seven is **chronically brand-absent** (visibility near zero,
+ * competitors visible instead); the rest are unremarkable, with the owned
+ * asset leading.
  */
 
 import { createHash } from "node:crypto";
 
-export type SyntheticMention = {
-  entity: string;
-  mentionCount: number;
-  share: number;
-};
-
-export type SyntheticRun = {
+export type SyntheticVisibilityBucket = {
   profoundPromptId: string;
   modelId: string;
   date: string;
-  runId: string;
+  asset: string;
+  assetOwned: boolean;
   visibilityScore: number;
   shareOfVoice: number;
-  mentionCount: number;
-  executions: number;
   averagePosition: number | null;
-  brandMentioned: boolean;
-  mentions: SyntheticMention[];
-  citationCount: number;
-  citationShare: number | null;
-  citations: { url: string; title: string; domain: string }[];
-  searchQueries: string[];
-  sentimentThemes: {
-    theme: string;
-    sentiment: "positive" | "neutral" | "negative";
-    quote: string;
-  }[];
-  rawAnswer: string;
+  rank: number | null;
 };
 
-const COMPETITORS = ["Rivergate Metrics", "Beacon Insights", "Ledgerline Analytics"];
-const SENTIMENT_THEMES: { theme: string; sentiment: "positive" | "neutral" | "negative" }[] = [
-  { theme: "ease of deployment", sentiment: "positive" },
-  { theme: "pricing transparency", sentiment: "neutral" },
-  { theme: "onboarding complexity", sentiment: "negative" },
-  { theme: "data residency", sentiment: "positive" },
-];
-const SEARCH_QUERY_POOL = [
-  "best product analytics platform",
-  "product analytics pricing comparison",
-  "self-hosted analytics vendor",
-  "data governance tooling for analytics",
-];
+export type SyntheticCitationBucket = {
+  profoundPromptId: string;
+  date: string;
+  domain: string;
+  count: number;
+  citationShare: number | null;
+  rank: number;
+};
+
+export type SyntheticSentimentBucket = {
+  profoundPromptId: string;
+  date: string;
+  positiveSentiment: number | null;
+  negativeSentiment: number | null;
+  occurrence: number | null;
+};
+
+const OWNED_DOMAIN = "northwind-analytics.example";
+const COMPETITOR_DOMAINS = ["rivergate-metrics.example", "beacon-insights.example"];
 
 function hashHex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
@@ -96,118 +77,114 @@ export function eachDateInRange(startDate: string, endDate: string, maxDays = 36
   return dates;
 }
 
-type PromptProfile = {
-  brandAbsent: boolean;
-  competitorDominated: boolean;
-};
-
 /** Stable per-prompt, independent of date and model. */
-function profileFor(profoundPromptId: string): PromptProfile {
-  const hex = hashHex(profoundPromptId);
-  const brandAbsent = parseInt(hex.slice(0, 2), 16) % 7 === 0;
-  const competitorDominated = !brandAbsent && parseInt(hex.slice(2, 4), 16) % 5 === 0;
-  return { brandAbsent, competitorDominated };
+function isBrandAbsent(profoundPromptId: string): boolean {
+  return parseInt(hashHex(profoundPromptId).slice(0, 2), 16) % 7 === 0;
 }
 
-export function generateRun(profoundPromptId: string, modelId: string, date: string): SyntheticRun {
-  const profile = profileFor(profoundPromptId);
+/**
+ * The owned asset's visibility bucket for one (prompt, model, date). When
+ * `competitorAssets` is non-empty, one complementary bucket per competitor is
+ * also returned — a real competitor-visibility signal for `classifyResult`'s
+ * `competitor_visible` classification (see `src/lib/profound-results.ts`).
+ */
+export function generateVisibilityBuckets(
+  profoundPromptId: string,
+  modelId: string,
+  date: string,
+  ownedAsset: string,
+  competitorAssets: string[] = [],
+): SyntheticVisibilityBucket[] {
+  const brandAbsent = isBrandAbsent(profoundPromptId);
   const hex = hashHex(`${profoundPromptId}:${modelId}:${date}`);
-  const runId = `run_${date.replace(/-/g, "")}_${modelId}`;
 
-  const executions = 20 + Math.round(fraction(hex, 0) * 180);
-  const competitorIndex = parseInt(hex.slice(8, 10), 16) % COMPETITORS.length;
-  // Always in bounds: competitorIndex is a modulo of the array's own length.
-  const competitorEntity = COMPETITORS[competitorIndex]!;
+  const ownShareOfVoice = brandAbsent ? 0 : 0.35 + fraction(hex, 12) * 0.5;
+  const ownVisibility = brandAbsent ? 0 : Math.min(1, ownShareOfVoice + fraction(hex, 4) * 0.15);
+  const ownRank = brandAbsent ? null : 1 + Math.floor(fraction(hex, 20) * 3);
+  const ownAveragePosition = brandAbsent ? null : 1 + fraction(hex, 20) * 2.5;
 
-  let shareOfVoice: number;
-  let brandMentioned: boolean;
-  let mentionCount: number;
-  let averagePosition: number | null;
-  let mentions: SyntheticMention[];
-
-  if (profile.brandAbsent) {
-    shareOfVoice = 0;
-    brandMentioned = false;
-    mentionCount = 0;
-    averagePosition = null;
-    mentions = [
-      {
-        entity: competitorEntity,
-        mentionCount: 3 + Math.round(fraction(hex, 16) * 5),
-        share: 0.6 + fraction(hex, 24) * 0.3,
-      },
-    ];
-  } else if (profile.competitorDominated) {
-    shareOfVoice = 0.05 + fraction(hex, 12) * 0.1;
-    brandMentioned = true;
-    mentionCount = 1 + Math.round(fraction(hex, 16) * 2);
-    averagePosition = 3 + fraction(hex, 20) * 3;
-    mentions = [
-      {
-        entity: competitorEntity,
-        mentionCount: 4 + Math.round(fraction(hex, 24) * 4),
-        share: 0.4 + fraction(hex, 28) * 0.3,
-      },
-    ];
-  } else {
-    shareOfVoice = 0.35 + fraction(hex, 12) * 0.5;
-    brandMentioned = true;
-    mentionCount = 2 + Math.round(fraction(hex, 16) * 6);
-    averagePosition = 1 + fraction(hex, 20) * 2.5;
-    mentions = [
-      {
-        entity: competitorEntity,
-        mentionCount: 1 + Math.round(fraction(hex, 24) * 3),
-        share: fraction(hex, 28) * (shareOfVoice * 0.7),
-      },
-    ];
-  }
-
-  const visibilityScore = brandMentioned ? Math.min(1, shareOfVoice + fraction(hex, 4) * 0.15) : 0;
-
-  const citationCount = brandMentioned ? Math.round(fraction(hex, 32) * 4) : 0;
-  const citationShare = brandMentioned ? Math.min(1, shareOfVoice + fraction(hex, 36) * 0.1) : 0;
-  const citations = Array.from({ length: citationCount }, (_, index) => ({
-    url: `https://northwind-analytics.example/resources/${date}-${index}`,
-    title: `Northwind Analytics — resource ${index + 1}`,
-    domain: "northwind-analytics.example",
-  }));
-
-  const searchQueryIndex = parseInt(hex.slice(40, 42), 16) % SEARCH_QUERY_POOL.length;
-  const searchQueries = [SEARCH_QUERY_POOL[searchQueryIndex]!];
-
-  const themeIndex = parseInt(hex.slice(42, 44), 16) % SENTIMENT_THEMES.length;
-  const theme = SENTIMENT_THEMES[themeIndex]!;
-  const sentimentThemes = [
+  const buckets: SyntheticVisibilityBucket[] = [
     {
-      ...theme,
-      quote: brandMentioned
-        ? `Northwind came up in the context of ${theme.theme}.`
-        : `No mention of Northwind surfaced in this answer.`,
+      profoundPromptId,
+      modelId,
+      date,
+      asset: ownedAsset,
+      assetOwned: true,
+      visibilityScore: ownVisibility,
+      shareOfVoice: ownShareOfVoice,
+      averagePosition: ownAveragePosition,
+      rank: ownRank,
     },
   ];
 
-  const rawAnswer = brandMentioned
-    ? `Several vendors are commonly recommended for this question, including Northwind Analytics and ${competitorEntity}. Northwind Analytics is frequently noted for ${theme.theme}.`
-    : `Several vendors are commonly recommended for this question, most often ${competitorEntity} and other established analytics platforms.`;
+  for (const [index, competitor] of competitorAssets.entries()) {
+    const competitorHex = hashHex(`${profoundPromptId}:${modelId}:${date}:${competitor}`);
+    // Competitors collectively fill whatever share the owned asset doesn't
+    // hold; a brand-absent prompt leaves the most room for them.
+    const remaining = 1 - ownShareOfVoice;
+    const share = Math.max(0, (remaining / (competitorAssets.length + 1)) * (1 + fraction(competitorHex, 8) * 0.6));
+    buckets.push({
+      profoundPromptId,
+      modelId,
+      date,
+      asset: competitor,
+      assetOwned: false,
+      visibilityScore: Math.min(1, share + fraction(competitorHex, 16) * 0.1),
+      shareOfVoice: share,
+      averagePosition: 1 + fraction(competitorHex, 20) * 3,
+      rank: brandAbsent ? 1 + index : 2 + index,
+    });
+  }
 
-  return {
-    profoundPromptId,
-    modelId,
-    date,
-    runId,
-    visibilityScore,
-    shareOfVoice,
-    mentionCount,
-    executions,
-    averagePosition,
-    brandMentioned,
-    mentions,
-    citationCount,
-    citationShare,
-    citations,
-    searchQueries,
-    sentimentThemes,
-    rawAnswer,
-  };
+  return buckets;
 }
+
+/**
+ * The real `/v2/reports/citations` endpoint cannot be grouped by model
+ * alongside prompt+date (verified live 2026-08-10 — see
+ * `src/lib/profound-results.ts`'s `promptDateKey` comment), so citations are
+ * a (prompt, date) concept, never (prompt, model, date). This generator
+ * matches that real constraint rather than inventing per-model detail.
+ */
+export function generateCitationBuckets(
+  profoundPromptId: string,
+  date: string,
+): SyntheticCitationBucket[] {
+  const brandAbsent = isBrandAbsent(profoundPromptId);
+  const hex = hashHex(`${profoundPromptId}:${date}:citations`);
+  if (brandAbsent) return [];
+
+  const count = Math.round(fraction(hex, 32) * 4);
+  if (count === 0) return [];
+
+  const citationShare = Math.min(1, 0.3 + fraction(hex, 36) * 0.5);
+  return [
+    {
+      profoundPromptId,
+      date,
+      domain: OWNED_DOMAIN,
+      count,
+      citationShare,
+      rank: 1,
+    },
+  ];
+}
+
+export function generateSentimentBucket(
+  profoundPromptId: string,
+  date: string,
+): SyntheticSentimentBucket {
+  const brandAbsent = isBrandAbsent(profoundPromptId);
+  const hex = hashHex(`${profoundPromptId}:${date}:sentiment`);
+
+  if (brandAbsent) {
+    return { profoundPromptId, date, positiveSentiment: null, negativeSentiment: null, occurrence: 0 };
+  }
+
+  const positiveSentiment = Math.round(fraction(hex, 0) * 60 + 20);
+  const negativeSentiment = Math.round(fraction(hex, 8) * (100 - positiveSentiment));
+  const occurrence = 1 + Math.round(fraction(hex, 16) * 5);
+  return { profoundPromptId, date, positiveSentiment, negativeSentiment, occurrence };
+}
+
+export { OWNED_DOMAIN, COMPETITOR_DOMAINS };

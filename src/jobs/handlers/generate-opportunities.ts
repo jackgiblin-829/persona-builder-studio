@@ -9,7 +9,8 @@ import {
   personaVersions,
   personas,
   profoundPromptLinks,
-  profoundResultSnapshots,
+  profoundResultBuckets,
+  promptAnswerCoverageEstimates,
   promptEvidence,
   promptPairs,
   promptSetVersions,
@@ -29,7 +30,8 @@ import {
   type GapSignal,
   type ResultClassification,
 } from "@/lib/content-gap";
-import { classifyResult, compareControl, detectMissingElements } from "@/lib/profound-results";
+import { hashExpectedElements } from "@/lib/answer-coverage";
+import { classifyResult, compareControl, type SnapshotMetrics } from "@/lib/profound-results";
 import { getBrandSearchIntelligence } from "@/services/search-intelligence";
 import { CONTENT_GAP, renderTemplate } from "@/prompts/registry";
 import { opportunityGenerationSchema, SCHEMA_VERSION } from "@/prompts/schemas";
@@ -120,7 +122,7 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
 
   const promptIds = personaPrompts.map((p) => p.id);
 
-  const [links, snapshots, pairs, pages, evidenceLinks, productRows, competitorRows] =
+  const [links, buckets, estimateRows, pairs, pages, evidenceLinks, productRows, competitorRows] =
     await Promise.all([
       db
         .select()
@@ -133,14 +135,18 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
         ),
       db
         .select()
-        .from(profoundResultSnapshots)
+        .from(profoundResultBuckets)
         .where(
           and(
-            inArray(profoundResultSnapshots.promptId, promptIds),
-            eq(profoundResultSnapshots.organizationId, brand.organizationId),
+            inArray(profoundResultBuckets.promptId, promptIds),
+            eq(profoundResultBuckets.organizationId, brand.organizationId),
           ),
         )
-        .orderBy(desc(profoundResultSnapshots.runDate)),
+        .orderBy(desc(profoundResultBuckets.bucketDate)),
+      db
+        .select()
+        .from(promptAnswerCoverageEstimates)
+        .where(inArray(promptAnswerCoverageEstimates.promptId, promptIds)),
       db.select().from(promptPairs).where(eq(promptPairs.promptSetVersionId, promptSetVersionId)),
       db.select().from(pageInventory).where(eq(pageInventory.brandId, brandId)),
       db
@@ -153,15 +159,27 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
       db.select().from(competitors).where(eq(competitors.brandId, brandId)),
     ]);
 
-  // Most recent snapshot per prompt, and every snapshot per prompt for
-  // aggregation (control comparison uses the whole window, not just the tip).
-  const snapshotsByPrompt = new Map<string, typeof snapshots>();
-  for (const snapshot of snapshots) {
-    if (!snapshot.promptId) continue;
-    const list = snapshotsByPrompt.get(snapshot.promptId) ?? [];
-    list.push(snapshot);
-    snapshotsByPrompt.set(snapshot.promptId, list);
+  // Most recent bucket per prompt, and every bucket per prompt for aggregation
+  // (control comparison uses the whole window, not just the tip).
+  const snapshotsByPrompt = new Map<string, typeof buckets>();
+  for (const bucket of buckets) {
+    if (!bucket.promptId) continue;
+    const list = snapshotsByPrompt.get(bucket.promptId) ?? [];
+    list.push(bucket);
+    snapshotsByPrompt.set(bucket.promptId, list);
   }
+
+  // Answer-coverage estimates (Phase 2), keyed by the prompt's *current*
+  // expected-elements hash so a stale estimate from before the prompt was
+  // last edited is never surfaced as current. A prompt with no matching
+  // estimate yet contributes an honestly empty `missingElements`, never a
+  // blocked candidate — the estimate job runs independently of this one.
+  const estimateByKey = new Map(
+    estimateRows.map((estimate) => [
+      `${estimate.promptId}::${estimate.expectedElementsHash}`,
+      estimate,
+    ]),
+  );
 
   const linkByPrompt = new Map(links.map((link) => [link.promptId, link]));
   const evidenceByPrompt = new Map<string, string[]>();
@@ -172,7 +190,6 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
   }
   const pairByPersonaPrompt = new Map(pairs.map((pair) => [pair.personaPromptId, pair]));
 
-  const competitorNames = competitorRows.map((c) => c.name);
   const competitorDomains = new Set(
     competitorRows.map((c) => c.domain).filter((d): d is string => !!d),
   );
@@ -201,17 +218,27 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
     const promptSnapshots = snapshotsByPrompt.get(prompt.id) ?? [];
     if (promptSnapshots.length === 0) continue; // No retrieval yet; nothing to analyze.
 
-    const latest = promptSnapshots[0]!; // Sorted desc by runDate above.
-    const classification: ResultClassification = classifyResult({
-      brandMentioned: latest.brandMentioned ?? false,
-      mentionCount: latest.mentionCount ?? 0,
+    const latest = promptSnapshots[0]!; // Sorted desc by bucketDate above.
+    // Competitor share of voice is not measured here: the retrieval job that
+    // populated `profoundResultBuckets` never requests competitor asset scope
+    // (see `src/jobs/handlers/profound-results.ts`), so there is no sibling
+    // competitor bucket row for this prompt/date/model to compare against.
+    // `null` is the honest value — never a guessed or zeroed one.
+    const classified = classifyResult({
+      visibilityScore: latest.visibilityScore,
       shareOfVoice: latest.shareOfVoice,
-      mentions: (latest.mentions as { entity: string; share: number }[]) ?? [],
+      competitorShareOfVoice: null,
     });
+    const classification: ResultClassification =
+      classified.classification === "brand_absent"
+        ? "brand_absent"
+        : classified.competitorVisible === true
+          ? "competitor_dominated"
+          : "normal";
 
-    const missingElements = detectMissingElements(prompt.expectedAnswerElements, {
-      rawAnswer: latest.rawAnswer,
-    });
+    const expectedElementsHash = hashExpectedElements(prompt.expectedAnswerElements);
+    const missingElements =
+      estimateByKey.get(`${prompt.id}::${expectedElementsHash}`)?.missing ?? [];
 
     let controlOutperforms: boolean | null = null;
     const pair = pairByPersonaPrompt.get(prompt.id);
@@ -301,10 +328,15 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
       promptText: prompt.promptText,
       topic: prompt.topic,
       personaName: persona.name,
-      runIds: promptSnapshots.slice(0, 5).map((s) => s.runId),
-      competitors: competitorNames.filter((name) =>
-        (latest.mentions as { entity: string }[])?.some((m) => m.entity === name),
-      ),
+      bucketIds: promptSnapshots.slice(0, 5).map((s) => s.id),
+      // Competitor-name matching is dropped rather than fabricated: it used
+      // to read `mentions[].entity` off the old per-execution snapshot, which
+      // no longer exists. `profoundResultBuckets` rows only ever carry
+      // competitor identity when the retrieval query requested competitor
+      // asset scope, which it currently never does (see the classification
+      // note above) — so there is no real competitor-asset row to match
+      // `competitorNames` against here.
+      competitors: [],
       citationSources: [
         ...new Set(
           ((latest.citations as { domain?: string }[]) ?? [])
@@ -406,7 +438,7 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
   );
 
   const validProfoundPromptIds = new Set(selected.map((c) => c.profoundPromptId));
-  const validRunIds = new Set(selected.flatMap((c) => c.runIds));
+  const validBucketIds = new Set(selected.flatMap((c) => c.bucketIds));
 
   let created = 0;
   const evidenceCutoff = personaVersion.evidenceCutoff;
@@ -433,7 +465,9 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
       const filteredEvidenceIds = opportunity.evidence_ids.filter((id) =>
         candidate.evidenceIds.includes(id),
       );
-      const filteredRunIds = opportunity.relevant_run_ids.filter((id) => validRunIds.has(id));
+      const filteredBucketIds = opportunity.relevant_bucket_ids.filter((id) =>
+        validBucketIds.has(id),
+      );
 
       await tx.insert(contentOpportunities).values({
         id: newId(ID_PREFIXES.contentOpportunity),
@@ -449,7 +483,7 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
         recommendation: analysis.recommendation,
         recommendationRationale: analysis.rationale,
         relevantProfoundPromptIds: [candidate.profoundPromptId],
-        relevantRunIds: filteredRunIds.length > 0 ? filteredRunIds : candidate.runIds,
+        relevantBucketIds: filteredBucketIds.length > 0 ? filteredBucketIds : candidate.bucketIds,
         competitors: candidate.competitors,
         citationSources: candidate.citationSources,
         missingAnswerElements: candidate.signal.missingElements,
@@ -481,12 +515,10 @@ registerJob(JOB_TYPES.generateOpportunities, async ({ job }) => {
   };
 });
 
-function toSnapshotMetrics(row: typeof profoundResultSnapshots.$inferSelect) {
+function toSnapshotMetrics(row: typeof profoundResultBuckets.$inferSelect): SnapshotMetrics {
   return {
     visibilityScore: row.visibilityScore,
     shareOfVoice: row.shareOfVoice,
-    mentionCount: row.mentionCount,
-    executions: row.executions,
     citationCount: row.citationCount,
     citationShare: row.citationShare,
     averagePosition: row.averagePosition,

@@ -1429,9 +1429,21 @@ export const profoundSyncItems = pgTable(
   ],
 );
 
-/** §25 — immutable result snapshots. Never recomputed, never relabelled. */
-export const profoundResultSnapshots = pgTable(
-  "profound_result_snapshots",
+/**
+ * §25 — Profound visibility/citations bucket rows.
+ *
+ * Renamed from `profound_result_snapshots` (2026-08-10): the real Profound v2
+ * reporting API returns one row per (asset x requested group_by dimension)
+ * bucket — there is no per-execution "run" concept, no mention count, no
+ * brand-mentioned flag, no raw answer text. Every column here has a direct
+ * real-API source; nothing is fabricated to fill a gap the vendor doesn't
+ * cover (see docs/integrations.md's Profound section and ADR-011).
+ * Immutable once written. Never recomputed, never relabelled — re-running
+ * retrieval for an overlapping window is a no-op for buckets already stored,
+ * enforced by the unique index below.
+ */
+export const profoundResultBuckets = pgTable(
+  "profound_result_buckets",
   {
     id: text("id").primaryKey(),
     organizationId: text("organization_id")
@@ -1443,45 +1455,154 @@ export const profoundResultSnapshots = pgTable(
     promptId: text("prompt_id").references(() => prompts.id, { onDelete: "set null" }),
     profoundPromptId: text("profound_prompt_id").notNull(),
     profoundCategoryId: text("profound_category_id").notNull(),
-    runId: text("run_id").notNull(),
-    runDate: timestamp("run_date", { withTimezone: true }).notNull(),
-    model: text("model"),
+    bucketDate: timestamp("bucket_date", { withTimezone: true }).notNull(),
     modelId: text("model_id").notNull(),
-    region: text("region"),
-    asset: text("asset"),
+    model: text("model"),
+    /** Empty-string sentinel (never null) so the unique index below dedupes correctly — Postgres treats NULL as distinct from NULL. */
+    topicId: text("topic_id").notNull().default(""),
     topic: text("topic"),
+    regionId: text("region_id").notNull().default(""),
+    region: text("region"),
+    personaId: text("persona_id").notNull().default(""),
     profoundPersona: text("profound_persona"),
+    asset: text("asset").notNull(),
+    assetOwned: boolean("asset_owned"),
+    rank: integer("rank"),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
     visibilityScore: doublePrecision("visibility_score"),
     shareOfVoice: doublePrecision("share_of_voice"),
-    mentionCount: integer("mention_count"),
-    executions: integer("executions"),
     averagePosition: doublePrecision("average_position"),
     citationCount: integer("citation_count"),
     citationShare: doublePrecision("citation_share"),
-    brandMentioned: boolean("brand_mentioned"),
-    rawAnswer: text("raw_answer"),
-    mentions: jsonb("mentions").$type<Record<string, unknown>[]>().notNull().default([]),
+    citationDomains: jsonb("citation_domains").$type<string[]>().notNull().default([]),
     citations: jsonb("citations").$type<Record<string, unknown>[]>().notNull().default([]),
-    searchQueries: jsonb("search_queries").$type<string[]>().notNull().default([]),
-    sentimentThemes: jsonb("sentiment_themes")
-      .$type<Record<string, unknown>[]>()
-      .notNull()
-      .default([]),
     rawResponse: jsonb("raw_response").$type<Record<string, unknown>>(),
     dataOrigin: dataOriginEnum("data_origin").notNull().default("mock"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("profound_result_snapshots_uq").on(
+    uniqueIndex("profound_result_buckets_uq").on(
       t.organizationId,
       t.profoundPromptId,
-      t.runId,
+      t.bucketDate,
       t.modelId,
+      t.topicId,
+      t.regionId,
+      t.personaId,
+      t.asset,
     ),
-    index("profound_result_snapshots_brand_idx").on(t.organizationId, t.brandId, t.runDate),
-    index("profound_result_snapshots_prompt_idx").on(t.promptId, t.runDate),
+    index("profound_result_buckets_brand_idx").on(t.organizationId, t.brandId, t.bucketDate),
+    index("profound_result_buckets_prompt_idx").on(t.promptId, t.bucketDate),
+  ],
+);
+
+/**
+ * §25 — Profound sentiment bucket rows.
+ *
+ * Kept separate from `profoundResultBuckets`: the real `/v2/reports/sentiment`
+ * endpoint requires an `asset` param and allows `group_by` dimensions
+ * (`tag`, `theme`, `claim`, `run`, `competitor`) that visibility/citations
+ * don't have, so it cannot share a bucket key with them. `profoundRun` here
+ * is Profound's own "run" group_by dimension for sentiment specifically —
+ * a real vendor concept, unrelated to and never to be confused with the
+ * retired per-execution `run_id` this schema used to invent.
+ */
+export const profoundSentimentBuckets = pgTable(
+  "profound_sentiment_buckets",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    promptId: text("prompt_id").references(() => prompts.id, { onDelete: "set null" }),
+    profoundPromptId: text("profound_prompt_id").notNull(),
+    profoundCategoryId: text("profound_category_id").notNull(),
+    asset: text("asset").notNull(),
+    bucketDate: timestamp("bucket_date", { withTimezone: true }).notNull(),
+    modelId: text("model_id").notNull(),
+    model: text("model"),
+    /** Empty-string sentinels (never null) so the unique index dedupes correctly regardless of which optional group_by dimensions a given query requested. */
+    topicId: text("topic_id").notNull().default(""),
+    topic: text("topic"),
+    regionId: text("region_id").notNull().default(""),
+    region: text("region"),
+    personaId: text("persona_id").notNull().default(""),
+    profoundPersona: text("profound_persona"),
+    tag: text("tag").notNull().default(""),
+    theme: text("theme").notNull().default(""),
+    claim: text("claim").notNull().default(""),
+    profoundRun: text("profound_run").notNull().default(""),
+    competitor: text("competitor").notNull().default(""),
+    positiveSentiment: doublePrecision("positive_sentiment"),
+    negativeSentiment: doublePrecision("negative_sentiment"),
+    occurrence: doublePrecision("occurrence"),
+    citedWebsites: jsonb("cited_websites").$type<string[]>().notNull().default([]),
+    rank: integer("rank"),
+    rawResponse: jsonb("raw_response").$type<Record<string, unknown>>(),
+    dataOrigin: dataOriginEnum("data_origin").notNull().default("mock"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("profound_sentiment_buckets_uq").on(
+      t.organizationId,
+      t.profoundPromptId,
+      t.asset,
+      t.bucketDate,
+      t.modelId,
+      t.topicId,
+      t.regionId,
+      t.personaId,
+      t.tag,
+      t.theme,
+      t.claim,
+      t.profoundRun,
+      t.competitor,
+    ),
+    index("profound_sentiment_buckets_brand_idx").on(t.organizationId, t.brandId, t.bucketDate),
+  ],
+);
+
+/**
+ * Self-computed answer-coverage estimate (replaces Profound-sourced
+ * missing-expected-elements detection — the real API exposes no raw answer
+ * text at all, so this product estimates coverage itself via its own LLM
+ * call). Always `dataOrigin: "local"` — "calculated by this application, not
+ * a vendor" (see `OriginBadge`) — never confused with Profound-confirmed data.
+ * Keyed by promptId + a content hash of the expected elements so it's
+ * cacheable and re-runnable without recomputing on every job.
+ */
+export const promptAnswerCoverageEstimates = pgTable(
+  "prompt_answer_coverage_estimates",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    promptId: text("prompt_id")
+      .notNull()
+      .references(() => prompts.id, { onDelete: "cascade" }),
+    expectedElementsHash: text("expected_elements_hash").notNull(),
+    covered: jsonb("covered").$type<string[]>().notNull().default([]),
+    missing: jsonb("missing").$type<string[]>().notNull().default([]),
+    confidence: doublePrecision("confidence").notNull(),
+    rationale: text("rationale").notNull(),
+    modelProvider: text("model_provider"),
+    modelId: text("model_id"),
+    promptTemplateVersion: text("prompt_template_version"),
+    dataOrigin: dataOriginEnum("data_origin").notNull().default("local"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("prompt_answer_coverage_estimates_uq").on(t.promptId, t.expectedElementsHash),
+    index("prompt_answer_coverage_estimates_brand_idx").on(t.organizationId, t.brandId),
   ],
 );
 
@@ -1546,7 +1667,7 @@ export const contentOpportunities = pgTable(
       .$type<string[]>()
       .notNull()
       .default([]),
-    relevantRunIds: jsonb("relevant_run_ids").$type<string[]>().notNull().default([]),
+    relevantBucketIds: jsonb("relevant_bucket_ids").$type<string[]>().notNull().default([]),
     competitors: jsonb("competitors").$type<string[]>().notNull().default([]),
     citationSources: jsonb("citation_sources").$type<string[]>().notNull().default([]),
     missingAnswerElements: jsonb("missing_answer_elements").$type<string[]>().notNull().default([]),
@@ -1601,7 +1722,7 @@ export const contentBriefs = pgTable(
     body: jsonb("body").$type<Record<string, unknown>>().notNull(),
     evidenceIds: jsonb("evidence_ids").$type<string[]>().notNull().default([]),
     profoundPromptIds: jsonb("profound_prompt_ids").$type<string[]>().notNull().default([]),
-    runIds: jsonb("run_ids").$type<string[]>().notNull().default([]),
+    bucketIds: jsonb("bucket_ids").$type<string[]>().notNull().default([]),
     modelProvider: text("model_provider"),
     modelId: text("model_id"),
     promptTemplateVersion: text("prompt_template_version"),

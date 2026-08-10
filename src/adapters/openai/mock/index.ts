@@ -4,6 +4,7 @@
  */
 import { registerMockGenerator } from "../mock";
 import {
+  ANSWER_COVERAGE_ESTIMATE,
   CANDIDATE_SEGMENTATION,
   CONTENT_GAP,
   EVIDENCE_EXTRACTION,
@@ -21,6 +22,7 @@ import { generateOpportunities, type ContentGapMockContext } from "./content-gap
 import { generateBrief, type BriefMockContext } from "./seo-brief";
 import { generateAudit, type PageAuditMockContext } from "./page-audit";
 import { generateWebResearchPlan, type WebResearchPlanMockContext } from "./web-research-plan";
+import { generateAnswerCoverageEstimate, type AnswerCoverageMockContext } from "./answer-coverage";
 
 registerMockGenerator(EVIDENCE_EXTRACTION.id, (context) =>
   generateEvidence(context as unknown as EvidenceMockContext),
@@ -52,4 +54,8 @@ registerMockGenerator(PAGE_AUDIT.id, (context) =>
 
 registerMockGenerator(WEB_RESEARCH_PLANNING.id, (context) =>
   generateWebResearchPlan(context as unknown as WebResearchPlanMockContext),
+);
+
+registerMockGenerator(ANSWER_COVERAGE_ESTIMATE.id, (context) =>
+  generateAnswerCoverageEstimate(context as unknown as AnswerCoverageMockContext),
 );

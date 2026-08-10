@@ -68,6 +68,7 @@ export const ID_PREFIXES = {
   pageAudit: "pau",
   auditFinding: "afd",
   pageInventory: "pgi",
+  answerCoverageEstimate: "ace",
   modelConfiguration: "mdc",
   promptTemplate: "tpl",
   evaluationRun: "evr",

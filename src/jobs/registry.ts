@@ -46,6 +46,7 @@ export const JOB_TYPES = {
   generateOpportunities: "generate_opportunities",
   generateBrief: "generate_brief",
   generatePageAudit: "generate_page_audit",
+  estimateAnswerCoverage: "estimate_answer_coverage",
   runEvaluation: "run_evaluation",
   retention: "retention_sweep",
 } as const;

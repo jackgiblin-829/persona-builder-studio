@@ -301,7 +301,7 @@ registerJob(JOB_TYPES.generateBrief, async ({ job }) => {
     body: sanitized.body,
     evidenceIds,
     profoundPromptIds,
-    runIds: opportunity.relevantRunIds,
+    bucketIds: opportunity.relevantBucketIds,
     modelProvider: result.modelProvider,
     modelId: result.modelId,
     promptTemplateVersion: SEO_BRIEF.version,
