@@ -133,16 +133,22 @@ registerJob(JOB_TYPES.profoundResults, async ({ job }) => {
     ];
   });
 
+  // Each row binds 29 columns; Postgres caps a single query at 65,535 bind
+  // parameters, so a wide retrieval window must be inserted in batches rather
+  // than as one values() call.
+  const INSERT_BATCH_SIZE = 1000;
+
   let inserted = 0;
   let alreadyPresent = 0;
-  if (values.length > 0) {
+  for (let i = 0; i < values.length; i += INSERT_BATCH_SIZE) {
+    const batch = values.slice(i, i + INSERT_BATCH_SIZE);
     const insertedRows = await db
       .insert(profoundResultSnapshots)
-      .values(values)
+      .values(batch)
       .onConflictDoNothing()
       .returning({ id: profoundResultSnapshots.id });
-    inserted = insertedRows.length;
-    alreadyPresent = values.length - inserted;
+    inserted += insertedRows.length;
+    alreadyPresent += batch.length - insertedRows.length;
   }
 
   return {
