@@ -14,14 +14,14 @@ Every vendor sits behind an interface in `src/adapters/<vendor>/types.ts` with a
 
 | Vendor | Live implementation status | Docs verified | Notes |
 | --- | --- | --- | --- |
-| OpenAI | Implemented against the Responses API with Structured Outputs | Not re-verified during this build (no network verification performed) | Endpoint/shape assumptions recorded below. Mock mode is the default and is what the seeded demo exercises. |
-| Profound | Typed REST wrapper behind `ProfoundAdapter` | Not re-verified during this build | Endpoint assumptions recorded below and marked as assumptions in code comments. |
-| SparkToro | Report-create + section-fetch with polling | Not re-verified during this build | Public API launched July 2026 per the research report. |
-| DataForSEO | Live + task-based patterns, Basic auth | Not re-verified during this build | LLM-response endpoints deliberately **not** implemented (Profound is the execution layer). |
+| OpenAI | Implemented against the embeddings API | Verified 2026-08-10 (live call executed) | `embed()` confirmed working live against a real key. `generateStructured`/`webSearch` still unverified. |
+| Profound | Typed REST wrapper behind `ProfoundAdapter` | Verified 2026-08-10 against docs.tryprofound.com | Auth header and the `/v1/org/*` taxonomy endpoints (models, categories, regions, domains, topics, tags) fixed and confirmed working live. `createPrompts`, the visibility/citations/sentiment reports, personas, `getOrganizations`, and `getPromptAnswers` are known to be a data-model mismatch, not a path bug — see below. |
+| SparkToro | Report-create + section-fetch with polling | Verified 2026-08-10 against sparktoro.com/api/docs | `createAudienceReport` fixed and confirmed working live. `getSection`'s per-row mapping is a known data-model mismatch — see below. |
+| DataForSEO | Live + task-based patterns, Basic auth | Verified 2026-08-10 against docs.dataforseo.com | Base URL, endpoint path, and Basic-auth scheme all confirmed correct as written. A live 401 was traced to a credentials/account issue (wrong login/password pair, per DataForSEO's own error code `40100`), not a code bug — see below. |
 | Object storage | S3-compatible via `@aws-sdk/client-s3`; local filesystem driver for dev | n/a | |
 | Queue | Postgres `jobs` table; BullMQ driver slot reserved | n/a | See ADR-004 |
 
-> **Honest statement of limitation.** This build was produced without network access to vendor documentation, so no live endpoint was verified against current official docs and no live call has been executed. Every live adapter is written from the endpoint assumptions listed below and is marked `@unverified` in source. Before enabling any vendor in production: re-read that vendor's current official documentation, correct the endpoint/field assumptions, record the documentation date in the table above, and run the adapter's contract test against a sandbox account. The mock adapters are complete and are the only path exercised by the seeded demo and the automated tests.
+> **Update, 2026-08-10.** A live smoke test (real API keys, one call per vendor) found every adapter's endpoint assumptions were wrong in at least one way — see the per-vendor sections below for exactly what was fixed and confirmed working versus what is still broken. The bigger finding: for Profound's reporting endpoints and SparkToro's section endpoint, the real vendor APIs return a **structurally different response shape** than what this product's normalized types and DB schema (`profound_result_snapshots`, `SparktoroAffinityRow`) were built around — invented per-execution/per-affinity-row detail (`run_id`, `mention_count`, `executions`, `brand_mentioned`, raw answer text, a uniform affinity row) that the real APIs simply do not expose. Those call sites now throw a clear `VendorError` naming the mismatch rather than guess a lossy mapping. Reconciling this is a schema/pipeline redesign decision, not a quick patch — see the `createPrompts`/reporting/persona notes in the Profound section and the `getSection` note in the SparkToro section for what a redesign would need to account for. The mock adapters are unaffected and remain the only path exercised by the seeded demo and the automated tests.
 
 ## OpenAI
 
@@ -79,20 +79,20 @@ queryAccountVisibility / queryAccountCitations / queryAccountSentiment
 
 **`queryAccountVisibility` / `queryAccountCitations` / `queryAccountSentiment`** are new (§ account-level evidence) and are scoped to a *category*, not to a list of prompts this product deployed — the brand's existing AI-visibility data across everything Profound already tracks, grouped by topic, used as an evidence source for persona building via `src/jobs/handlers/profound-evidence.ts`. This is the least-certain endpoint assumption in this adapter: `docs/integrations.md`'s existing `queryVisibility`/`queryCitations`/`querySentiment` assumptions are extended with `category_id`/`scope: "all"`/`group_by: "topic"` in place of an explicit `prompt_ids` list, which has not been checked against any real account-level reporting documentation. Re-verify this specifically, separately from the rest of the adapter, before enabling live mode for account-evidence pulls.
 
-Endpoint assumptions (**unverified**, base `https://api.tryprofound.com`):
+Endpoints, base `https://api.tryprofound.com` — **verified 2026-08-10** against https://docs.tryprofound.com unless marked otherwise:
 
-| Operation | Assumed request |
-| --- | --- |
-| Auth | `Authorization: Bearer <api key>`, server-side only |
-| Categories | `GET /v1/categories` |
-| Regions / models | `GET /v1/regions`, `GET /v1/models` |
-| Topics / tags / assets | `GET /v1/categories/{id}/topics`, `/tags`, `GET /v1/assets` |
-| Personas | `GET /v1/organizations/{id}/personas`, `GET /v1/categories/{id}/personas` |
-| List prompts | `GET /v1/categories/{id}/prompts?limit&cursor` |
-| Create prompts | `POST /v1/categories/{id}/prompts` with `{ prompts: [...], dry_run: boolean }` |
-| Visibility / citations | `POST /v1/reports/visibility`, `POST /v1/reports/citations` |
-| Sentiment | `POST /v1/reports/sentiment` |
-| Raw answers | `GET /v1/prompts/{id}/answers?start_date&end_date` |
+| Operation | Request | Status |
+| --- | --- | --- |
+| Auth | `X-API-Key: <api key>`, server-side only | Fixed (was `Authorization: Bearer`) and confirmed live |
+| Categories | `GET /v1/org/categories` | Fixed (was `/v1/categories`) and confirmed live |
+| Regions / models | `GET /v1/org/regions`, `GET /v1/org/models` | Fixed (was `/v1/regions`, `/v1/models`) and confirmed live |
+| Topics / tags / domains | `GET /v1/org/categories/{id}/topics`, `/tags`, `GET /v1/org/domains` | Fixed (was `/v1/categories/{id}/...`, `/v1/assets`) and confirmed live for domains; topics/tags use the same fix pattern, not separately smoke-tested |
+| List prompts | `GET /v1/org/categories/{id}/prompts?limit&cursor` | Fixed path; also fixed response parsing — real shape is `{info:{next_cursor,...}, data:[{prompt, topic:{id,name}, tags:[{id,name}], regions:[{id,name}], platforms:[{id,name}], personas:[{id,name}], status}]}`, not the flat string fields previously assumed. Not live-tested (no prompts exist yet in the test category). |
+| Organizations | **No documented endpoint.** The org is implicit in the API key; it only appears nested as `{id, name}` on category/domain/persona rows. `getOrganizations` now throws rather than call a made-up path. |
+| Personas | `GET /v1/org/personas` (org-scoped only, no category filter) | **Not fixed** — real response is a rich `PersonaProfile` (behavior/employment/demographics), not this product's flat `{id, name, description, categoryId}`. Needs a type redesign before going live; `getOrganizationPersonas`/`getCategoryPersonas` throw a clear error rather than guess a mapping. |
+| Create prompts | `POST /v1/org/categories/{id}/prompts` with `{ prompts: [...], dry_run: boolean }` | Path fixed, **but not usable live**: the real response has no per-item status or `client_reference` echo — it's aggregate counts (`created`, `topics_created`, `tags_created`) plus a flat list of created prompt objects. This product's idempotency/outcome-tracking model (`normalizeOutcome`, per-item correlation) has no data to work from. Moot in practice per ADR-013 (deployment is export-only; nothing in `src/` calls this), but the code still can't go live as written. |
+| Visibility / citations / sentiment | `POST /v2/reports/visibility`, `/citations`, `/sentiment`, scoped by `category_id` + `group_by` (not `prompt_ids`) | **Not fixed** — the real response is an asset × group_by-bucket summary (`visibility_score`, `share_of_voice`, `average_position`, citation counts, sentiment percentages). There is no `run_id`, `mention_count`, `executions`, `brand_mentioned`, `mentions`, or per-execution granularity anywhere in it. The `profound_result_snapshots` schema and `src/jobs/handlers/profound-results.ts` were built around that invented per-execution shape, so this needs a schema/pipeline redesign, not a path fix. The methods throw rather than mis-map fields. Same applies to the account-scoped variants (`queryAccountVisibility` etc.). |
+| Raw answers | **No documented endpoint.** `getPromptAnswers` now throws rather than call a made-up path — Profound's v2 reports do not appear to expose raw per-execution answer text at all. |
 
 **Persona creation is deliberately absent.** The spec forbids assuming it exists. When no Profound persona matches, the mapping falls back to the deterministic tag `persona:<internal-slug>` with mapping status `tag_fallback` and a visible warning in the deployment preview.
 
@@ -111,6 +111,12 @@ Sections: demographics, bio keywords, websites, social accounts, networks, YouTu
 
 Behaviour: bearer auth server-side; polling with backoff for `processing` sections; distinct typed errors for rate limit vs credit exhaustion (credit errors are **not** retried); results cached per `(reportId, section)`; credits recorded in `vendor_usage`.
 
+**Verified 2026-08-10** against https://sparktoro.com/api/docs, base `https://api.sparktoro.com`:
+
+- Auth (`Authorization: Bearer <api_key>`) was already correct as written.
+- `createAudienceReport`: fixed from a guessed `POST /v1/audiences` (body `{description, location}`, response `{id, status}`) to the real `POST /v3/describe/create` (body `{prompt, location}`, response `{report_id, status, message}`). Confirmed working against a real account (report created, 10 credits charged).
+- `getSection`: fixed the URL shape conceptually (`GET /v3/{section}?report_id=...`, not `/v1/audiences/{id}/sections/{section}`), but **the per-row mapping is not usable live**: each section has its own real shape — `/v3/demographics` returns generic `{name, value}` buckets, `/v3/websites` returns `{id, domain, affinity, category, visits, moz_da, moz_links, hidden_gem, history, meta_description}`, `/v3/tam` returns one object (`estimated_population`, ...) rather than a row array — none of which match this product's single normalized `SparktoroAffinityRow` (`{label, affinityScore, percentage, url}`). Reconciling ~14 different real shapes against one row type is a data-model decision. `getSection` now throws a clear error naming the mismatch instead of guessing field names.
+
 All SparkToro data is stored as `provenance = 'externally_supported'` and rendered with an "aggregated external audience evidence" label. The system never converts an aggregate affinity into an asserted individual behaviour.
 
 ## DataForSEO
@@ -124,6 +130,8 @@ getKeywordIntent / getOrganicSerp / getDomainCompetitors / getReviews
 ```
 
 Behaviour: HTTP Basic auth from server-side credentials; both live and task-post/task-get patterns depending on endpoint; polling, retries with backoff, a concurrency limit, per-task cost recorded in `vendor_usage`, raw response retained, normalized into `search_datasets`.
+
+**Verified 2026-08-10** against https://docs.dataforseo.com: base URL, the `search_volume/live` path, and the request body shape are all confirmed correct as written — no code changes needed. A live 401 ("You are not authorized... see your login details here") was traced to DataForSEO's own documented error code `40100` (credentials mismatch), most commonly caused by using the account dashboard login/password instead of the separate **API Access** login/password from `app.dataforseo.com/api-access`, or a rotated password. `GET /v3/appendix/user_data` is a free endpoint that confirms whether credentials authenticate at all, without a billable data call — worth calling first when diagnosing this.
 
 **Not implemented, by design:** DataForSEO LLM Responses / LLM Mentions / LLM Scraper. Profound is the AI-search execution and visibility layer for this product; implementing a second one would violate the product boundary.
 

@@ -31,12 +31,36 @@ import type {
 /**
  * Live Profound adapter.
  *
- * @unverified — written from the endpoint assumptions recorded in
- * docs/integrations.md. No live call has been executed and the current official
- * documentation has not been checked in this environment. Before enabling live
- * mode: re-read Profound's current API documentation, correct the paths and
- * field names below, record the documentation date in docs/integrations.md, and
- * run the adapter against a sandbox account.
+ * Verified 2026-08-10 against https://docs.tryprofound.com (auth, and the
+ * `/v1/org/*` taxonomy endpoints: models, categories, regions, domains,
+ * category topics, category tags). See docs/integrations.md for the
+ * verification date and sources.
+ *
+ * @unverified — everything else is still a guess and known, in some cases, to
+ * be WRONG rather than merely unconfirmed:
+ * - `getOrganizations` and `getPromptAnswers`: no matching endpoint exists in
+ *   the current docs at all. These throw rather than call a made-up path.
+ * - `getOrganizationPersonas`/`getCategoryPersonas`: the real endpoint is
+ *   `GET /v1/org/personas` (org-scoped only, no category filter) and returns
+ *   a rich `PersonaProfile` (behavior/employment/demographics), not the flat
+ *   `{id, name, description, categoryId}` this file's `ProfoundPersona` type
+ *   assumes. Left unchanged pending a type redesign — do not trust this path.
+ * - `createPrompts`: the real response has no per-item status/outcome or
+ *   client-reference echo — it returns aggregate counts and a flat list of
+ *   created prompt objects. This file's idempotency/outcome-tracking model
+ *   (`normalizeOutcome`, per-item `client_reference` matching) cannot be
+ *   satisfied by the real API and needs a redesign, not a path fix.
+ * - `queryVisibility`/`queryCitations`/`querySentiment` (and the account
+ *   variants): the real endpoints are `POST /v2/reports/{visibility,
+ *   citations,sentiment}`, scoped by `category_id` + `group_by`, returning
+ *   asset/bucket summary rows (visibility_score, share_of_voice,
+ *   average_position, citation counts, sentiment percentages). There is no
+ *   `run_id`, `mention_count`, `executions`, `brand_mentioned`, `mentions`,
+ *   or raw answer text anywhere in that shape — the `profound_result_
+ *   snapshots` DB schema and this job's result model were built around
+ *   invented per-execution data that the real API does not expose. Do not
+ *   patch this by guessing a field mapping: it needs a schema/pipeline
+ *   redesign decision, tracked as a known gap rather than silently faked.
  *
  * Two behaviours here are not negotiable regardless of what the documentation
  * turns out to say:
@@ -65,52 +89,61 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
   }
 
   async getOrganizations(): Promise<ProfoundOrganization[]> {
-    const body = await this.get("/v1/organizations", "getOrganizations");
-    return parse(listOf(organizationSchema), body, "getOrganizations").map((row) => ({
-      id: row.id,
-      name: row.name,
-    }));
+    // No documented endpoint lists organizations directly — the org is
+    // implicit in the API key, and surfaces only as a nested {id, name} on
+    // category/domain/persona responses. Guessing a path here would silently
+    // fail or return the wrong data, so this is an explicit unsupported call.
+    throw new VendorError(
+      "profound",
+      "getOrganizations",
+      "Profound has no documented endpoint for listing organizations. The organization is implicit in the API key.",
+      { retryable: false },
+    );
   }
 
   async getCategories(): Promise<ProfoundCategory[]> {
-    const body = await this.get("/v1/categories", "getCategories");
+    const body = await this.get("/v1/org/categories", "getCategories");
     return parse(listOf(categorySchema), body, "getCategories").map((row) => ({
       id: row.id,
       name: row.name,
-      brandName: row.brand_name ?? null,
-      domain: row.domain ?? null,
+      // The real API has no brand/domain concept on a category.
+      brandName: null,
+      domain: null,
     }));
   }
 
   async getRegions(): Promise<ProfoundRegion[]> {
-    const body = await this.get("/v1/regions", "getRegions");
-    return parse(listOf(regionSchema), body, "getRegions").map((row) => ({
-      code: row.code,
-      name: row.name ?? row.code,
+    const body = await this.get("/v1/org/regions", "getRegions");
+    return parse(listOf(namedResourceSchema), body, "getRegions").map((row) => ({
+      code: row.id,
+      name: row.name,
     }));
   }
 
   async getModels(): Promise<ProfoundModel[]> {
-    const body = await this.get("/v1/models", "getModels");
-    return parse(listOf(modelSchema), body, "getModels").map((row) => ({
+    const body = await this.get("/v1/org/models", "getModels");
+    return parse(listOf(namedResourceSchema), body, "getModels").map((row) => ({
       id: row.id,
-      name: row.name ?? row.id,
-      platform: row.platform ?? row.id,
+      name: row.name,
+      // The real API has no separate platform slug; id doubles as the closest
+      // available identifier (e.g. "chatgpt", "perplexity").
+      platform: row.id,
     }));
   }
 
   async getAssets(): Promise<ProfoundAsset[]> {
-    const body = await this.get("/v1/assets", "getAssets");
-    return parse(listOf(assetSchema), body, "getAssets").map((row) => ({
+    const body = await this.get("/v1/org/domains", "getAssets");
+    return parse(listOf(domainSchema), body, "getAssets").map((row) => ({
       id: row.id,
       name: row.name,
-      domain: row.domain ?? null,
+      // `name` on a domain resource is the domain string itself.
+      domain: row.name,
     }));
   }
 
   async getCategoryTopics(categoryId: string): Promise<ProfoundTopic[]> {
     const body = await this.get(
-      `/v1/categories/${encodeURIComponent(categoryId)}/topics`,
+      `/v1/org/categories/${encodeURIComponent(categoryId)}/topics`,
       "getCategoryTopics",
     );
     return parse(listOf(topicSchema), body, "getCategoryTopics").map((row) => ({
@@ -122,39 +155,39 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
 
   async getCategoryTags(categoryId: string): Promise<ProfoundTag[]> {
     const body = await this.get(
-      `/v1/categories/${encodeURIComponent(categoryId)}/tags`,
+      `/v1/org/categories/${encodeURIComponent(categoryId)}/tags`,
       "getCategoryTags",
     );
-    return parse(listOf(tagSchema), body, "getCategoryTags").map((row) => ({
+    return parse(listOf(namedResourceSchema), body, "getCategoryTags").map((row) => ({
       name: row.name,
-      promptCount: row.prompt_count ?? 0,
+      // The real API reports no per-tag prompt count.
+      promptCount: 0,
     }));
   }
 
-  async getOrganizationPersonas(organizationId: string): Promise<ProfoundPersona[]> {
-    const body = await this.get(
-      `/v1/organizations/${encodeURIComponent(organizationId)}/personas`,
+  async getOrganizationPersonas(_organizationId: string): Promise<ProfoundPersona[]> {
+    // @unverified — the real endpoint (`GET /v1/org/personas`) is org-scoped
+    // and returns a rich PersonaProfile (behavior/employment/demographics),
+    // not this type's flat {id, name, description, categoryId}. Needs a type
+    // redesign before this can call the real endpoint correctly.
+    throw new VendorError(
+      "profound",
       "getOrganizationPersonas",
+      "Profound's persona response shape does not match this product's ProfoundPersona type yet — needs a mapping redesign before going live.",
+      { retryable: false },
     );
-    return parse(listOf(personaSchema), body, "getOrganizationPersonas").map((row) => ({
-      id: row.id,
-      name: row.name,
-      description: row.description ?? null,
-      categoryId: row.category_id ?? null,
-    }));
   }
 
-  async getCategoryPersonas(categoryId: string): Promise<ProfoundPersona[]> {
-    const body = await this.get(
-      `/v1/categories/${encodeURIComponent(categoryId)}/personas`,
+  async getCategoryPersonas(_categoryId: string): Promise<ProfoundPersona[]> {
+    // @unverified — see getOrganizationPersonas. The real endpoint also has
+    // no category filter; it would need to be built from `/v1/org/personas`
+    // filtered client-side by the category nested in each row.
+    throw new VendorError(
+      "profound",
       "getCategoryPersonas",
+      "Profound's persona response shape does not match this product's ProfoundPersona type yet — needs a mapping redesign before going live.",
+      { retryable: false },
     );
-    return parse(listOf(personaSchema), body, "getCategoryPersonas").map((row) => ({
-      id: row.id,
-      name: row.name,
-      description: row.description ?? null,
-      categoryId: row.category_id ?? categoryId,
-    }));
   }
 
   async listPrompts(categoryId: string): Promise<ProfoundExistingPrompt[]> {
@@ -166,25 +199,25 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
       if (cursor) query.set("cursor", cursor);
 
       const body = await this.get(
-        `/v1/categories/${encodeURIComponent(categoryId)}/prompts?${query.toString()}`,
+        `/v1/org/categories/${encodeURIComponent(categoryId)}/prompts?${query.toString()}`,
         "listPrompts",
       );
       const page_ = parse(promptPageSchema, body, "listPrompts");
 
-      for (const row of page_.data ?? page_.prompts ?? []) {
+      for (const row of page_.data) {
         out.push({
           id: row.id,
-          text: row.prompt_text ?? row.text ?? "",
-          topic: row.topic ?? null,
-          tags: row.tags ?? [],
-          personaId: row.persona_id ?? null,
-          regions: row.regions ?? [],
-          platforms: row.platforms ?? [],
-          status: row.status ?? "unknown",
+          text: row.prompt,
+          topic: row.topic?.name ?? null,
+          tags: (row.tags ?? []).map((tag) => tag.name),
+          personaId: row.personas?.[0]?.id ?? null,
+          regions: (row.regions ?? []).map((region) => region.name),
+          platforms: (row.platforms ?? []).map((platform) => platform.name),
+          status: row.status,
         });
       }
 
-      cursor = page_.next_cursor ?? null;
+      cursor = page_.info.next_cursor ?? null;
       if (!cursor) return out;
     }
 
@@ -423,7 +456,7 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
       const response = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
-          Authorization: `Bearer ${this.apiKey}`,
+          "X-API-Key": this.apiKey,
           Accept: "application/json",
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
@@ -487,49 +520,34 @@ export class LiveProfoundAdapter implements ProfoundAdapter {
 
 // ── Response contracts ──────────────────────────────────────────────────────
 
-const organizationSchema = z.object({ id: z.string(), name: z.string() });
+/** `{id, name}` — Profound's generic named-reference shape (models, regions, tags, ...). */
+const namedResourceSchema = z.object({ id: z.string(), name: z.string() });
 const categorySchema = z.object({
   id: z.string(),
   name: z.string(),
-  brand_name: z.string().nullish(),
-  domain: z.string().nullish(),
+  internal_name: z.string().nullish(),
 });
-const regionSchema = z.object({ code: z.string(), name: z.string().nullish() });
-const modelSchema = z.object({
-  id: z.string(),
-  name: z.string().nullish(),
-  platform: z.string().nullish(),
-});
-const assetSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  domain: z.string().nullish(),
-});
+const domainSchema = z.object({ id: z.string(), name: z.string() });
 const topicSchema = z.object({ id: z.string(), name: z.string() });
-const tagSchema = z.object({ name: z.string(), prompt_count: z.number().nullish() });
-const personaSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string().nullish(),
-  category_id: z.string().nullish(),
-});
 
 const existingPromptSchema = z.object({
   id: z.string(),
-  prompt_text: z.string().nullish(),
-  text: z.string().nullish(),
-  topic: z.string().nullish(),
-  tags: z.array(z.string()).nullish(),
-  persona_id: z.string().nullish(),
-  regions: z.array(z.string()).nullish(),
-  platforms: z.array(z.string()).nullish(),
-  status: z.string().nullish(),
+  prompt: z.string(),
+  topic: namedResourceSchema.nullish(),
+  tags: z.array(namedResourceSchema).nullish(),
+  regions: z.array(namedResourceSchema).nullish(),
+  platforms: z.array(namedResourceSchema).nullish(),
+  personas: z.array(namedResourceSchema).nullish(),
+  status: z.string(),
 });
 
 const promptPageSchema = z.object({
-  data: z.array(existingPromptSchema).nullish(),
-  prompts: z.array(existingPromptSchema).nullish(),
-  next_cursor: z.string().nullish(),
+  info: z.object({
+    total_rows: z.number().nullish(),
+    limit: z.number().nullish(),
+    next_cursor: z.string().nullish(),
+  }),
+  data: z.array(existingPromptSchema),
 });
 
 /** `POST /v1/reports/visibility` and `/citations` and `/sentiment` share this request shape. */

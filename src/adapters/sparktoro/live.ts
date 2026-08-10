@@ -3,8 +3,6 @@ import { z } from "zod";
 import { VendorError, VendorNotConfiguredError } from "@/lib/errors";
 import { isTransportRetryableStatus, sleep, transportRetryDelayMs } from "@/lib/vendor-retry";
 import {
-  sparktoroAffinityRowSchema,
-  sparktoroAudienceSizeSchema,
   type CreateAudienceReportRequest,
   type CreateAudienceReportResult,
   type GetSectionRequest,
@@ -16,13 +14,23 @@ import {
 /**
  * Live SparkToro adapter.
  *
- * @unverified — written from the endpoint assumptions in docs/integrations.md
- * (ADR-011). SparkToro's public audience-research API is recent (per the
- * research report cited in docs/integrations.md) and has not been
- * re-verified against current official documentation in this environment.
- * Before enabling live mode: re-read SparkToro's current API documentation,
- * correct the paths and field names below, record the documentation date in
- * docs/integrations.md, and run this adapter against a sandbox account.
+ * Verified 2026-08-10 against https://sparktoro.com/api/docs: base URL
+ * (`https://api.sparktoro.com`), `Authorization: Bearer` auth, and
+ * `createAudienceReport` (`POST /v3/describe/create`) are all confirmed
+ * correct or now fixed to match. See docs/integrations.md for the
+ * verification date and sources.
+ *
+ * @unverified — `getSection`'s per-row mapping is still a guess, and is now
+ * known to be structurally wrong: the real API has no uniform "affinity row"
+ * shape across sections the way `SparktoroAffinityRow` assumes. Verified
+ * examples: `/v3/demographics` returns generic `{name, value}` buckets with
+ * no affinity/percentage/url concept at all; `/v3/websites` returns
+ * `{id, domain, affinity, category, visits, moz_da, moz_links, hidden_gem,
+ * history, meta_description}`; `/v3/tam` returns a single object
+ * (`estimated_population`, etc.), not a row array. Each of the ~14 sections
+ * this product could request has its own shape, and reconciling that against
+ * one normalized row type is a data-model decision, not a path fix — so
+ * `getSection` throws rather than silently mis-mapping fields.
  *
  * A failed call throws (ADR-009) — there is no path from a live error to
  * mock data. Credit exhaustion and rate limiting are distinguished because
@@ -34,26 +42,10 @@ import {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TRANSPORT_RETRIES = 3;
 
-/** How many times a `processing` section is polled before giving up. */
-const MAX_POLL_ATTEMPTS = 8;
-const POLL_BASE_DELAY_MS = 3_000;
-const POLL_MAX_DELAY_MS = 30_000;
-
 const createReportResponseSchema = z.object({
-  id: z.string(),
+  report_id: z.string(),
   status: z.enum(["queued", "processing", "ready"]).optional().default("processing"),
-});
-
-const sectionResponseSchema = z.object({
-  status: z.enum(["ready", "processing"]),
-  data: z
-    .object({
-      rows: z.array(sparktoroAffinityRowSchema).optional().default([]),
-      audience_size: sparktoroAudienceSizeSchema.optional().nullable(),
-    })
-    .optional()
-    .default({ rows: [] }),
-  credits_used: z.number().optional().default(0),
+  message: z.string().nullish(),
 });
 
 export class LiveSparktoroAdapter implements SparktoroAdapter {
@@ -71,49 +63,26 @@ export class LiveSparktoroAdapter implements SparktoroAdapter {
   ): Promise<SparktoroResult<CreateAudienceReportResult>> {
     const body = await this.request(
       "POST",
-      "/v1/audiences",
-      { description: request.description, location: request.location ?? null },
+      "/v3/describe/create",
+      { prompt: request.description, location: request.location ?? undefined },
       "createAudienceReport",
     );
     const parsed = parse(createReportResponseSchema, body, "createAudienceReport");
-    const data: CreateAudienceReportResult = { reportId: parsed.id, status: parsed.status };
+    const data: CreateAudienceReportResult = { reportId: parsed.report_id, status: parsed.status };
     return { data, dataOrigin: "live", creditsUsed: 0, raw: body as Record<string, unknown> };
   }
 
   async getSection(request: GetSectionRequest): Promise<SparktoroResult<GetSectionResult>> {
-    const path = `/v1/audiences/${encodeURIComponent(request.reportId)}/sections/${request.section}`;
-
-    for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt++) {
-      const body = await this.request("GET", path, undefined, "getSection");
-      const parsed = parse(sectionResponseSchema, body, "getSection");
-
-      if (parsed.status === "ready") {
-        const data: GetSectionResult = {
-          status: "ready",
-          section: request.section,
-          rows: parsed.data.rows,
-          audienceSize: parsed.data.audience_size ?? null,
-        };
-        return {
-          data,
-          dataOrigin: "live",
-          creditsUsed: parsed.credits_used,
-          raw: body as Record<string, unknown>,
-        };
-      }
-
-      if (attempt < MAX_POLL_ATTEMPTS) {
-        await sleep(Math.min(POLL_BASE_DELAY_MS * attempt, POLL_MAX_DELAY_MS));
-      }
-    }
-
-    // Give up rather than poll forever; the job handler's own retry/backoff
-    // (via a retryable error) picks this back up on the next attempt.
+    // Each section has its own real-world response shape (see the class
+    // doc comment) — none of them are the uniform affinity-row shape this
+    // method's return type promises, so this cannot be mapped without
+    // guessing field semantics the docs don't confirm. Throwing here matches
+    // ADR-009: a failed live call must never coerce into fabricated data.
     throw new VendorError(
       "sparktoro",
       "getSection",
-      `Section "${request.section}" for report ${request.reportId} was still processing after ${MAX_POLL_ATTEMPTS} poll attempts.`,
-      { code: "vendor_timeout", retryable: true, details: { reportId: request.reportId } },
+      `SparkToro's "${request.section}" section has its own response shape that does not match this product's normalized SparktoroAffinityRow type — needs a per-section mapping redesign before going live.`,
+      { retryable: false, details: { reportId: request.reportId, section: request.section } },
     );
   }
 
