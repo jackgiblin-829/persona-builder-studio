@@ -3,12 +3,15 @@ import { z } from "zod";
 import { VendorError, VendorNotConfiguredError } from "@/lib/errors";
 import { isTransportRetryableStatus, sleep, transportRetryDelayMs } from "@/lib/vendor-retry";
 import {
+  sparktoroWebsiteRowSchema,
+  VERIFIED_SPARKTORO_SECTIONS,
   type CreateAudienceReportRequest,
   type CreateAudienceReportResult,
   type GetSectionRequest,
   type GetSectionResult,
   type SparktoroAdapter,
   type SparktoroResult,
+  type SparktoroSectionRow,
 } from "./types";
 
 /**
@@ -20,17 +23,18 @@ import {
  * correct or now fixed to match. See docs/integrations.md for the
  * verification date and sources.
  *
- * @unverified — `getSection`'s per-row mapping is still a guess, and is now
- * known to be structurally wrong: the real API has no uniform "affinity row"
- * shape across sections the way `SparktoroAffinityRow` assumes. Verified
- * examples: `/v3/demographics` returns generic `{name, value}` buckets with
- * no affinity/percentage/url concept at all; `/v3/websites` returns
+ * `getSection` is only implemented for `VERIFIED_SPARKTORO_SECTIONS`
+ * (`demographics`, `websites` as of 2026-08-10) — those two real shapes were
+ * checked against https://sparktoro.com/api/docs and are parsed per-section
+ * below (`demographics`: generic `{name, value}` buckets; `websites`:
  * `{id, domain, affinity, category, visits, moz_da, moz_links, hidden_gem,
- * history, meta_description}`; `/v3/tam` returns a single object
- * (`estimated_population`, etc.), not a row array. Each of the ~14 sections
- * this product could request has its own shape, and reconciling that against
- * one normalized row type is a data-model decision, not a path fix — so
- * `getSection` throws rather than silently mis-mapping fields.
+ * meta_description}`). Every other section in `SPARKTORO_SECTIONS` has its
+ * own, likely different, real shape that has not been checked — `getSection`
+ * throws for those rather than guess a mapping the docs don't confirm.
+ * `/v3/tam` in particular is known to return a single object
+ * (`estimated_population`, etc.), not a row array, so it must never be routed
+ * through this row-array return type even once verified — it needs its own
+ * method/type.
  *
  * A failed call throws (ADR-009) — there is no path from a live error to
  * mock data. Credit exhaustion and rate limiting are distinguished because
@@ -46,6 +50,27 @@ const createReportResponseSchema = z.object({
   report_id: z.string(),
   status: z.enum(["queued", "processing", "ready"]).optional().default("processing"),
   message: z.string().nullish(),
+});
+
+const sectionMetaSchema = z.object({
+  credits_charged: z.number().nullish(),
+  credits_remaining: z.number().nullish(),
+  credits_expires_at: z.string().nullish(),
+  low_balance: z.boolean().nullish(),
+});
+
+/** `{data: [...], meta: {...}}` — the envelope a flat-row section (e.g. `websites`) uses. */
+function sectionEnvelopeSchema<T extends z.ZodTypeAny>(rowSchema: T) {
+  return z.object({ data: z.array(rowSchema), meta: sectionMetaSchema });
+}
+
+/**
+ * `/v3/demographics`'s real shape: `{data: {category: [{name,value}]}, meta}`
+ * — a dict of category to buckets, not a flat array. Verified 2026-08-10.
+ */
+const demographicsEnvelopeSchema = z.object({
+  data: z.record(z.string(), z.array(z.object({ name: z.string(), value: z.number() }))),
+  meta: sectionMetaSchema,
 });
 
 export class LiveSparktoroAdapter implements SparktoroAdapter {
@@ -73,17 +98,48 @@ export class LiveSparktoroAdapter implements SparktoroAdapter {
   }
 
   async getSection(request: GetSectionRequest): Promise<SparktoroResult<GetSectionResult>> {
-    // Each section has its own real-world response shape (see the class
-    // doc comment) — none of them are the uniform affinity-row shape this
-    // method's return type promises, so this cannot be mapped without
-    // guessing field semantics the docs don't confirm. Throwing here matches
-    // ADR-009: a failed live call must never coerce into fabricated data.
-    throw new VendorError(
-      "sparktoro",
-      "getSection",
-      `SparkToro's "${request.section}" section has its own response shape that does not match this product's normalized SparktoroAffinityRow type — needs a per-section mapping redesign before going live.`,
-      { retryable: false, details: { reportId: request.reportId, section: request.section } },
-    );
+    if (!VERIFIED_SPARKTORO_SECTIONS.includes(request.section as (typeof VERIFIED_SPARKTORO_SECTIONS)[number])) {
+      // Matches ADR-009: a failed live call must never coerce into fabricated
+      // data. This section's real shape has not been checked against current
+      // docs, so guessing a mapping here would risk exactly that.
+      throw new VendorError(
+        "sparktoro",
+        "getSection",
+        `SparkToro's "${request.section}" section has not been verified against current API docs — refusing to guess a response mapping.`,
+        { retryable: false, details: { reportId: request.reportId, section: request.section } },
+      );
+    }
+
+    const path = `/v3/${request.section}?report_id=${encodeURIComponent(request.reportId)}`;
+    const body = await this.request("GET", path, undefined, "getSection");
+
+    let rows: SparktoroSectionRow[];
+    let creditsCharged: number | null | undefined;
+
+    if (request.section === "demographics") {
+      const parsed = parse(demographicsEnvelopeSchema, body, "getSection");
+      rows = Object.entries(parsed.data).flatMap(([category, buckets]) =>
+        buckets.map((bucket) => ({ category, name: bucket.name, value: bucket.value })),
+      );
+      creditsCharged = parsed.meta.credits_charged;
+    } else {
+      const parsed = parse(sectionEnvelopeSchema(sparktoroWebsiteRowSchema), body, "getSection");
+      rows = parsed.data;
+      creditsCharged = parsed.meta.credits_charged;
+    }
+
+    const data: GetSectionResult = {
+      status: "ready",
+      section: request.section,
+      rows,
+      audienceSize: null,
+    };
+    return {
+      data,
+      dataOrigin: "live",
+      creditsUsed: creditsCharged ?? 0,
+      raw: body as Record<string, unknown>,
+    };
   }
 
   // ── HTTP ──────────────────────────────────────────────────────────────────

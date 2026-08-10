@@ -2,6 +2,8 @@ import "server-only";
 import {
   generateAffinityRows,
   generateAudienceSize,
+  generateDemographicsRows,
+  generateWebsiteRows,
   mockReportId,
 } from "@fixtures/sparktoro/generators";
 import type {
@@ -39,7 +41,13 @@ export class MockSparktoroAdapter implements SparktoroAdapter {
     // so this method never needs anything beyond what the live contract gives it.
     const seed = request.reportId;
     const rows =
-      request.section === "audience_size" ? [] : generateAffinityRows(seed, request.section);
+      request.section === "audience_size"
+        ? []
+        : request.section === "demographics"
+          ? generateDemographicsRows(seed)
+          : request.section === "websites"
+            ? generateWebsiteRows(seed)
+            : generateAffinityRows(seed, request.section);
     const audienceSize = request.section === "audience_size" ? generateAudienceSize(seed) : null;
 
     const data: GetSectionResult = {

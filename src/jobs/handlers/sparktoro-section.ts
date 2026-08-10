@@ -6,7 +6,10 @@ import { getSparktoroAdapter } from "@/adapters/sparktoro";
 import {
   sparktoroSectionSchema,
   type SparktoroAffinityRow,
+  type SparktoroNameValueRow,
   type SparktoroSection,
+  type SparktoroSectionRow,
+  type SparktoroWebsiteRow,
 } from "@/adapters/sparktoro/types";
 import { getQueue } from "@/adapters/queue";
 import { AppError } from "@/lib/errors";
@@ -223,10 +226,17 @@ async function upsertSectionDocument(
     .where(eq(dataSources.id, dataSourceId));
 }
 
-/** Renders one section's normalized data into prose the extractor can read. */
+/**
+ * Renders one section's normalized data into prose the extractor can read.
+ * Each verified section (see `VERIFIED_SPARKTORO_SECTIONS`) has its own real
+ * shape and gets its own template; sections without a verified live shape
+ * fall back to the generic affinity-row template, which only mock mode can
+ * ever produce — the live adapter throws before reaching this function for
+ * those sections.
+ */
 function documentifySection(
   section: SparktoroSection,
-  rows: SparktoroAffinityRow[],
+  rows: SparktoroSectionRow[],
   audienceSize: { estimatedSize: number | null; confidence: string } | null,
 ): string | null {
   if (section === "audience_size") {
@@ -235,8 +245,23 @@ function documentifySection(
   }
 
   if (rows.length === 0) return null;
+
+  if (section === "demographics") {
+    const sentences = (rows as SparktoroNameValueRow[]).map((row) => `${row.name} (${row.value})`);
+    return `This audience's demographic and firmographic breakdown: ${sentences.join("; ")}.`;
+  }
+
+  if (section === "websites") {
+    const sentences = (rows as SparktoroWebsiteRow[]).map((row) => {
+      const authority = row.moz_da != null ? `, domain authority ${row.moz_da}` : "";
+      const traffic = row.visits != null ? `, ~${row.visits.toLocaleString()} visits` : "";
+      return `${row.domain} (${row.affinity}x baseline affinity${authority}${traffic})`;
+    });
+    return `This audience over-indexes on the following websites: ${sentences.join("; ")}.`;
+  }
+
   const label = SECTION_PROSE_LABEL[section];
-  const sentences = rows.map((row) => {
+  const sentences = (rows as SparktoroAffinityRow[]).map((row) => {
     const pct = row.percentage !== null ? `, reaching ${row.percentage}% of the audience` : "";
     return `"${row.label}" (${row.affinityScore}x baseline affinity${pct})`;
   });

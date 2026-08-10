@@ -12,7 +12,9 @@ import { createHash } from "node:crypto";
 import type {
   SparktoroAffinityRow,
   SparktoroAudienceSize,
+  SparktoroNameValueRow,
   SparktoroSection,
+  SparktoroWebsiteRow,
 } from "@/adapters/sparktoro/types";
 import {
   APP_AND_AI_TOOL_POOL,
@@ -42,10 +44,9 @@ export function mockReportId(seed: string): string {
   return `sr_${hashHex(`sparktoro:${seed}`).slice(0, 20)}`;
 }
 
+/** Excludes `demographics`/`websites` — those have their own real-shaped generators below. */
 const SECTION_POOLS: Partial<Record<SparktoroSection, readonly string[]>> = {
-  demographics: DEMOGRAPHIC_LABEL_POOL,
   bio_keywords: BIO_KEYWORD_POOL,
-  websites: WEBSITE_POOL,
   social_accounts: SOCIAL_ACCOUNT_POOL,
   networks: NETWORK_POOL,
   youtube: YOUTUBE_CHANNEL_POOL,
@@ -79,12 +80,56 @@ export function generateAffinityRows(
   return scored.slice(0, Math.min(count, scored.length)).map((row, rank) => {
     const affinityScore = round1(1.2 + fraction(row.hex, 8) * 6.8 - rank * 0.15); // ~1.2x-8x
     const percentage = round1(5 + fraction(row.hex, 16) * 45); // 5%-50%
-    const isUrlish = section === "websites" || section === "apps_and_ai_tools";
     return {
       label: row.label,
       affinityScore: Math.max(1.0, affinityScore),
       percentage,
-      url: isUrlish ? `https://${row.label.replace(/^@/, "").toLowerCase()}` : null,
+    };
+  });
+}
+
+/**
+ * Mock rows for `demographics`, flattened to match the live adapter's
+ * verified real shape (a dict of category → `{name, value}[]` buckets).
+ * `DEMOGRAPHIC_LABEL_POOL` entries are treated as `name` values within one
+ * synthetic "traits" category, since the pool has no real category taxonomy.
+ */
+export function generateDemographicsRows(description: string): SparktoroNameValueRow[] {
+  const scored = DEMOGRAPHIC_LABEL_POOL.map((name, index) => {
+    const hex = hashHex(`${description}:demographics:${name}:${index}`);
+    return { name, hex, sortKey: fraction(hex, 0) };
+  });
+  scored.sort((a, b) => b.sortKey - a.sortKey);
+
+  const count = 4 + Math.floor(fraction(hashHex(`${description}:demographics:count`), 0) * 5);
+  return scored.slice(0, Math.min(count, scored.length)).map((row) => ({
+    category: "traits",
+    name: row.name,
+    value: round1(5 + fraction(row.hex, 16) * 45),
+  }));
+}
+
+/** Mock rows for `websites`, matching the live adapter's verified real shape. */
+export function generateWebsiteRows(description: string): SparktoroWebsiteRow[] {
+  const scored = WEBSITE_POOL.map((label, index) => {
+    const hex = hashHex(`${description}:websites:${label}:${index}`);
+    return { label, hex, sortKey: fraction(hex, 0) };
+  });
+  scored.sort((a, b) => b.sortKey - a.sortKey);
+
+  const count = 4 + Math.floor(fraction(hashHex(`${description}:websites:count`), 0) * 5);
+  return scored.slice(0, Math.min(count, scored.length)).map((row, rank) => {
+    const affinity = round1(1.2 + fraction(row.hex, 8) * 6.8 - rank * 0.15);
+    return {
+      id: null,
+      domain: row.label.replace(/^@/, "").toLowerCase(),
+      affinity: Math.max(1.0, affinity),
+      category: null,
+      visits: Math.floor(500 + fraction(row.hex, 16) * 499_500),
+      moz_da: Math.floor(10 + fraction(row.hex, 24) * 89),
+      moz_links: Math.floor(fraction(row.hex, 0) * 50_000),
+      hidden_gem: fraction(row.hex, 8) > 0.8,
+      meta_description: null,
     };
   });
 }

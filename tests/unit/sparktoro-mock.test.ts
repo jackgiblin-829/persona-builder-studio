@@ -71,7 +71,13 @@ describe("MockSparktoroAdapter determinism", () => {
       } else {
         expect(result.data.rows.length).toBeGreaterThan(0);
         for (const row of result.data.rows) {
-          expect(row.affinityScore).toBeGreaterThanOrEqual(1);
+          if (section === "demographics") {
+            expect((row as { value: number }).value).toBeGreaterThan(0);
+          } else if (section === "websites") {
+            expect((row as { affinity: number }).affinity).toBeGreaterThanOrEqual(1);
+          } else {
+            expect((row as { affinityScore: number }).affinityScore).toBeGreaterThanOrEqual(1);
+          }
         }
       }
     }
