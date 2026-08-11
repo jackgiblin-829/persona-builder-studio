@@ -92,31 +92,6 @@
       focus:ring-0 disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-ink-subtle;
   }
 
-  .table-wrap {
-    @apply w-full overflow-x-auto;
-  }
-
-  .table {
-    @apply w-full border-collapse text-sm;
-  }
-
-  .table th {
-    @apply whitespace-nowrap border-b border-surface-border px-3 py-2 text-left text-xs
-      font-bold uppercase text-ink-muted;
-  }
-
-  .table td {
-    @apply border-b border-surface-border px-3 py-2 align-top text-ink;
-  }
-
-  .prose-brief h3 {
-    @apply mt-5 text-sm font-semibold uppercase text-ink-muted;
-  }
-
-  .prose-brief ul {
-    @apply mt-2 list-disc space-y-1 pl-5 text-sm;
-  }
-
   .brand-icon {
     display: inline-block;
     width: 1.25rem;
