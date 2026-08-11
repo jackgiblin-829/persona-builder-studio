@@ -1,77 +1,50 @@
 import "server-only";
 import { z } from "zod";
 import { VendorError, VendorNotConfiguredError } from "@/lib/errors";
-import { isTransportRetryableStatus, sleep, transportRetryDelayMs } from "@/lib/vendor-retry";
-import {
-  sparktoroWebsiteRowSchema,
-  VERIFIED_SPARKTORO_SECTIONS,
-  type CreateAudienceReportRequest,
-  type CreateAudienceReportResult,
-  type GetSectionRequest,
-  type GetSectionResult,
-  type SparktoroAdapter,
-  type SparktoroResult,
-  type SparktoroSectionRow,
+import { sleep } from "@/lib/vendor-retry";
+import type {
+  CreateAudienceReportRequest,
+  CreditBalance,
+  GetSectionRequest,
+  SparktoroAdapter,
+  SparktoroResult,
+  SparktoroSection,
 } from "./types";
 
-/**
- * Live SparkToro adapter.
- *
- * Verified 2026-08-10 against https://sparktoro.com/api/docs: base URL
- * (`https://api.sparktoro.com`), `Authorization: Bearer` auth, and
- * `createAudienceReport` (`POST /v3/describe/create`) are all confirmed
- * correct or now fixed to match. See docs/integrations.md for the
- * verification date and sources.
- *
- * `getSection` is only implemented for `VERIFIED_SPARKTORO_SECTIONS`
- * (`demographics`, `websites` as of 2026-08-10) — those two real shapes were
- * checked against https://sparktoro.com/api/docs and are parsed per-section
- * below (`demographics`: generic `{name, value}` buckets; `websites`:
- * `{id, domain, affinity, category, visits, moz_da, moz_links, hidden_gem,
- * meta_description}`). Every other section in `SPARKTORO_SECTIONS` has its
- * own, likely different, real shape that has not been checked — `getSection`
- * throws for those rather than guess a mapping the docs don't confirm.
- * `/v3/tam` in particular is known to return a single object
- * (`estimated_population`, etc.), not a row array, so it must never be routed
- * through this row-array return type even once verified — it needs its own
- * method/type.
- *
- * A failed call throws (ADR-009) — there is no path from a live error to
- * mock data. Credit exhaustion and rate limiting are distinguished because
- * they call for different handling upstream: a rate limit is worth retrying
- * after a backoff, a credit exhaustion is not (retrying spends nothing new
- * and will only fail again until the account is topped up).
- */
+const ENDPOINTS: Record<SparktoroSection, string> = {
+  demographics: "/v3/demographics",
+  bios: "/v3/bios",
+  websites: "/v3/websites",
+  social_accounts: "/v3/social",
+  networks: "/v3/networks",
+  youtube: "/v3/youtube",
+  podcasts: "/v3/podcasts",
+  reddit: "/v3/reddit",
+  press: "/v3/press",
+  apps_and_ai_tools: "/v3/apps/ai",
+  brands: "/v3/brands",
+  keywords: "/v3/keywords",
+  prompt_topics: "/v3/prompts",
+  market_size: "/v3/tam",
+};
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_TRANSPORT_RETRIES = 3;
+const WARM_SECTIONS = new Set<SparktoroSection>(["reddit", "brands", "prompt_topics"]);
+const MAX_WARM_ATTEMPTS = 12;
 
-const createReportResponseSchema = z.object({
+const creditsSchema = z.object({
+  credits_remaining: z.number(),
+  credits_expires_at: z.string().nullable(),
+  is_trial: z.boolean(),
+  low_balance: z.boolean(),
+  rate_limit_per_min: z.number(),
+});
+const reportSchema = z.object({
   report_id: z.string(),
-  status: z.enum(["queued", "processing", "ready"]).optional().default("processing"),
-  message: z.string().nullish(),
+  status: z.literal("ready"),
+  message: z.string().optional(),
 });
 
-const sectionMetaSchema = z.object({
-  credits_charged: z.number().nullish(),
-  credits_remaining: z.number().nullish(),
-  credits_expires_at: z.string().nullish(),
-  low_balance: z.boolean().nullish(),
-});
-
-/** `{data: [...], meta: {...}}` — the envelope a flat-row section (e.g. `websites`) uses. */
-function sectionEnvelopeSchema<T extends z.ZodTypeAny>(rowSchema: T) {
-  return z.object({ data: z.array(rowSchema), meta: sectionMetaSchema });
-}
-
-/**
- * `/v3/demographics`'s real shape: `{data: {category: [{name,value}]}, meta}`
- * — a dict of category to buckets, not a flat array. Verified 2026-08-10.
- */
-const demographicsEnvelopeSchema = z.object({
-  data: z.record(z.string(), z.array(z.object({ name: z.string(), value: z.number() }))),
-  meta: sectionMetaSchema,
-});
+type HttpResult = { status: number; body: unknown; retryAfterSeconds: number | null };
 
 export class LiveSparktoroAdapter implements SparktoroAdapter {
   readonly mode = "live" as const;
@@ -83,138 +56,148 @@ export class LiveSparktoroAdapter implements SparktoroAdapter {
     if (!apiKey) throw new VendorNotConfiguredError("sparktoro", "construct");
   }
 
-  async createAudienceReport(
-    request: CreateAudienceReportRequest,
-  ): Promise<SparktoroResult<CreateAudienceReportResult>> {
-    const body = await this.request(
-      "POST",
-      "/v3/describe/create",
-      { prompt: request.description, location: request.location ?? undefined },
-      "createAudienceReport",
-    );
-    const parsed = parse(createReportResponseSchema, body, "createAudienceReport");
-    const data: CreateAudienceReportResult = { reportId: parsed.report_id, status: parsed.status };
-    return { data, dataOrigin: "live", creditsUsed: 0, raw: body as Record<string, unknown> };
-  }
-
-  async getSection(request: GetSectionRequest): Promise<SparktoroResult<GetSectionResult>> {
-    if (!VERIFIED_SPARKTORO_SECTIONS.includes(request.section as (typeof VERIFIED_SPARKTORO_SECTIONS)[number])) {
-      // Matches ADR-009: a failed live call must never coerce into fabricated
-      // data. This section's real shape has not been checked against current
-      // docs, so guessing a mapping here would risk exactly that.
-      throw new VendorError(
-        "sparktoro",
-        "getSection",
-        `SparkToro's "${request.section}" section has not been verified against current API docs — refusing to guess a response mapping.`,
-        { retryable: false, details: { reportId: request.reportId, section: request.section } },
-      );
-    }
-
-    const path = `/v3/${request.section}?report_id=${encodeURIComponent(request.reportId)}`;
-    const body = await this.request("GET", path, undefined, "getSection");
-
-    let rows: SparktoroSectionRow[];
-    let creditsCharged: number | null | undefined;
-
-    if (request.section === "demographics") {
-      const parsed = parse(demographicsEnvelopeSchema, body, "getSection");
-      rows = Object.entries(parsed.data).flatMap(([category, buckets]) =>
-        buckets.map((bucket) => ({ category, name: bucket.name, value: bucket.value })),
-      );
-      creditsCharged = parsed.meta.credits_charged;
-    } else {
-      const parsed = parse(sectionEnvelopeSchema(sparktoroWebsiteRowSchema), body, "getSection");
-      rows = parsed.data;
-      creditsCharged = parsed.meta.credits_charged;
-    }
-
-    const data: GetSectionResult = {
-      status: "ready",
-      section: request.section,
-      rows,
-      audienceSize: null,
+  async getCreditBalance(): Promise<SparktoroResult<CreditBalance>> {
+    const result = await this.request("GET", "/v3/account/credits", undefined, "getCreditBalance");
+    const parsed = creditsSchema.safeParse(result.body);
+    if (!parsed.success) throw this.shapeError("getCreditBalance", parsed.error);
+    const data = {
+      creditsRemaining: parsed.data.credits_remaining,
+      creditsExpiresAt: parsed.data.credits_expires_at,
+      isTrial: parsed.data.is_trial,
+      lowBalance: parsed.data.low_balance,
+      rateLimitPerMinute: parsed.data.rate_limit_per_min,
     };
     return {
       data,
       dataOrigin: "live",
-      creditsUsed: creditsCharged ?? 0,
-      raw: body as Record<string, unknown>,
+      creditsUsed: 0,
+      raw: result.body as Record<string, unknown>,
     };
   }
 
-  // ── HTTP ──────────────────────────────────────────────────────────────────
+  async createAudienceReport(request: CreateAudienceReportRequest) {
+    const result = await this.request(
+      "POST",
+      "/v3/describe/create",
+      { prompt: request.description, location: request.location },
+      "createAudienceReport",
+    );
+    const parsed = reportSchema.safeParse(result.body);
+    if (!parsed.success) throw this.shapeError("createAudienceReport", parsed.error);
+    return {
+      data: { reportId: parsed.data.report_id, status: parsed.data.status },
+      dataOrigin: "live" as const,
+      creditsUsed: 10,
+      raw: result.body as Record<string, unknown>,
+    };
+  }
+
+  async getSection(request: GetSectionRequest) {
+    const path = `${ENDPOINTS[request.section]}?report_id=${encodeURIComponent(request.reportId)}`;
+    let result: HttpResult | null = null;
+    let attempt = 0;
+    while (attempt < (WARM_SECTIONS.has(request.section) ? MAX_WARM_ATTEMPTS : 1)) {
+      attempt++;
+      result = await this.request("GET", path, undefined, `getSection:${request.section}`, true);
+      if (result.status !== 202) break;
+      const delaySeconds = result.retryAfterSeconds ?? 5;
+      await sleep(Math.min(Math.max(delaySeconds, 0), 30) * 1000);
+    }
+    if (!result || result.status === 202) {
+      throw new VendorError(
+        "sparktoro",
+        "getSection",
+        `${request.section} was still preparing after ${attempt} attempts.`,
+        {
+          code: "vendor_timeout",
+          retryable: true,
+        },
+      );
+    }
+    const envelope = z
+      .object({
+        data: z.unknown(),
+        meta: z.object({ credits_charged: z.number().nullish() }).passthrough(),
+      })
+      .passthrough()
+      .safeParse(result.body);
+    if (!envelope.success) throw this.shapeError(`getSection:${request.section}`, envelope.error);
+    const normalized = normalizeSection(request.section, envelope.data.data);
+    return {
+      data: { status: "ready" as const, section: request.section, normalized },
+      dataOrigin: "live" as const,
+      creditsUsed: envelope.data.meta.credits_charged ?? 0,
+      raw: result.body as Record<string, unknown>,
+      attempts: attempt,
+    };
+  }
 
   private async request(
     method: "GET" | "POST",
     path: string,
     body: unknown,
     operation: string,
-    attempt = 1,
-  ): Promise<unknown> {
-    const baseUrl = this.options.baseUrl ?? "https://api.sparktoro.com";
+    accept202 = false,
+    transportAttempt = 1,
+  ): Promise<HttpResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    );
-
+    const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 120_000);
     try {
-      const response = await fetch(`${baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          Accept: "application/json",
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      const response = await fetch(
+        `${this.options.baseUrl ?? "https://api.sparktoro.com"}${path}`,
+        {
+          method,
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: "application/json",
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: controller.signal,
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: controller.signal,
-      });
-
+      );
+      const responseBody = await safeJson(response);
+      const retryAfterSeconds = parseRetryAfter(response.headers.get("retry-after"));
+      if (response.status === 202 && accept202)
+        return { status: 202, body: responseBody, retryAfterSeconds };
       if (response.status === 402) {
-        // Credit exhaustion is never retried — retrying spends no new
-        // credits and will only fail the same way again.
-        throw new VendorError("sparktoro", operation, "SparkToro account is out of credits.", {
-          code: "vendor_credit_exhausted",
-          httpStatus: response.status,
-          retryable: false,
-        });
-      }
-
-      if (isTransportRetryableStatus(response.status)) {
-        if (attempt <= MAX_TRANSPORT_RETRIES) {
-          await sleep(transportRetryDelayMs(response, attempt));
-          return this.request(method, path, body, operation, attempt + 1);
-        }
+        const detail = responseBody as { credits_required?: number; credits_remaining?: number };
         throw new VendorError(
           "sparktoro",
           operation,
-          `SparkToro returned ${response.status} after retries.`,
+          "SparkToro has insufficient credits for this request.",
           {
-            code: response.status === 429 ? "vendor_rate_limited" : "vendor_unavailable",
-            httpStatus: response.status,
-            retryable: true,
+            code: "vendor_credit_exhausted",
+            httpStatus: 402,
+            retryable: false,
+            details: detail,
           },
         );
       }
-
+      if ((response.status === 429 || response.status >= 500) && transportAttempt <= 3) {
+        await sleep((retryAfterSeconds ?? Math.min(2 ** transportAttempt, 20)) * 1000);
+        return this.request(method, path, body, operation, accept202, transportAttempt + 1);
+      }
       if (!response.ok) {
-        const detail = await safeErrorDetail(response);
+        const detail = responseBody as { message?: string };
         throw new VendorError(
           "sparktoro",
           operation,
-          `SparkToro returned ${response.status}${detail ? ` (${detail})` : ""}.`,
-          { httpStatus: response.status, retryable: false },
+          detail.message ?? `SparkToro returned ${response.status}.`,
+          {
+            code: response.status === 429 ? "vendor_rate_limited" : "vendor_unavailable",
+            httpStatus: response.status,
+            retryable: response.status === 429 || response.status >= 500,
+          },
         );
       }
-
-      return response.json();
+      return { status: response.status, body: responseBody, retryAfterSeconds };
     } catch (error) {
       if (error instanceof VendorError) throw error;
       if (error instanceof Error && error.name === "AbortError") {
         throw new VendorError("sparktoro", operation, "SparkToro request timed out.", {
           code: "vendor_timeout",
           retryable: true,
-          cause: error,
         });
       }
       throw new VendorError("sparktoro", operation, "SparkToro request failed.", {
@@ -226,29 +209,43 @@ export class LiveSparktoroAdapter implements SparktoroAdapter {
       clearTimeout(timeout);
     }
   }
-}
 
-function parse<T extends z.ZodTypeAny>(schema: T, body: unknown, operation: string): z.infer<T> {
-  const result = schema.safeParse(body);
-  if (!result.success) {
-    throw new VendorError(
+  private shapeError(operation: string, error: z.ZodError) {
+    return new VendorError(
       "sparktoro",
       operation,
-      `Unrecognised response shape from SparkToro (${operation}).`,
+      "SparkToro returned an unrecognized response shape.",
       {
         retryable: false,
-        details: { issues: result.error.issues.slice(0, 5).map((i) => i.path.join(".")) },
+        details: { issues: error.issues.slice(0, 5).map((issue) => issue.path.join(".")) },
       },
     );
   }
-  return result.data;
 }
 
-async function safeErrorDetail(response: Response): Promise<string | null> {
+export function normalizeSection(
+  section: SparktoroSection,
+  data: unknown,
+): Record<string, unknown> {
+  if (section === "demographics" && data && typeof data === "object" && !Array.isArray(data)) {
+    return { distributions: data as Record<string, unknown> };
+  }
+  if (section === "market_size" && data && typeof data === "object" && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
+  return { items: Array.isArray(data) ? data : data == null ? [] : [data] };
+}
+
+function parseRetryAfter(value: string | null) {
+  if (!value) return null;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
+async function safeJson(response: Response): Promise<unknown> {
   try {
-    const body = (await response.json()) as { message?: string; error?: string };
-    return body.message ?? body.error ?? null;
+    return await response.json();
   } catch {
-    return null;
+    return {};
   }
 }

@@ -1,473 +1,97 @@
-/**
- * Versioned prompt-template registry.
- *
- * Templates are source-controlled rather than editable at runtime, so a
- * generated artefact's `prompt_template_version` always resolves to a template
- * you can read in git. Changing a template's text requires bumping its version.
- */
-
 export type PromptTemplate = {
   id: string;
   version: string;
   purpose: string;
-  system: string;
-  /** `{{placeholders}}` are substituted by `renderTemplate`. */
-  user: string;
   modelTier: "economical" | "reasoning";
+  system: string;
+  user: string;
 };
 
-export const EVIDENCE_EXTRACTION: PromptTemplate = {
-  id: "evidence_extraction",
-  version: "1.0.0",
-  purpose: "Convert a source passage into atomic, cited evidence records.",
+export const SIGNAL_EXTRACTION: PromptTemplate = {
+  id: "research_signal_extraction",
+  version: "2.0.0",
+  purpose: "Extract atomic research signals from redacted source passages.",
   modelTier: "economical",
-  system: `You are an evidence extraction system for customer and audience research.
-
-Your task is to convert source passages into atomic evidence records. You do not
-create personas, recommendations, or content. You extract only what the source
-supports.
-
-Rules:
-
-1. Distinguish direct observation, direct statement, brand assertion, analyst
-   interpretation, and model inference. Use the provenance values:
-   - "observed" for something a customer, prospect or searcher said or did
-   - "brand_assertion" for a claim the brand makes about itself
-   - "externally_supported" for aggregate third-party data
-   - "inferred" only when the passage clearly implies it; prefer omitting
-2. Do not infer demographic, psychological, financial or identity attributes
-   that are not present in the passage.
-3. Preserve the customer's original vocabulary in the vocabulary field.
-4. Split passages containing multiple claims into separate evidence records.
-5. Mark uncertainty, ambiguity, sarcasm and contradictions in uncertainty_note.
-6. Personal information has already been redacted and replaced with typed
-   placeholders such as [EMAIL_1]. Never attempt to reconstruct it.
-7. Return valid JSON matching the supplied schema.
-8. Every record must contain char_start and char_end offsets into the supplied
-   passage, and the exact quote at those offsets.
-9. If no relevant evidence exists, return an empty records array.
-
-Classify relevant evidence into exactly one of: job_to_be_done, constraint,
-success_metric, decision_criterion, vocabulary, question, objection, pain_point,
-desired_outcome, behavior, comparison, implementation_requirement,
-proof_requirement, brand_claim, other.`,
-  user: `Brand context:
-{{brand_context}}
-
-Source metadata:
-{{source_metadata}}
-
-Source passage:
-{{source_passage}}`,
+  system: `You extract atomic audience-research signals from first-party material.
+Use only the passage. Never reconstruct redacted PII or infer protected traits.
+Keep the customer's vocabulary. Each signal must include a short exact quote,
+the supplied source location, and calibrated confidence. Return no signal when
+the passage does not support one. Capture explicit brand names, parent companies,
+aliases, entity collisions, category terms, business lines, competitors, buyer
+qualifiers, and facts that may become stale using their dedicated categories.
+Return strict JSON matching the schema.`,
+  user: `Project:\n{{project_context}}\n\nSource location: {{source_location}}\n\nRedacted passage:\n{{source_passage}}`,
 };
 
-export const CANDIDATE_SEGMENTATION: PromptTemplate = {
-  id: "candidate_segmentation",
-  version: "1.0.0",
-  purpose: "Identify 3–7 candidate customer segments from approved evidence.",
+export const PERSONA_GENERATION: PromptTemplate = {
+  id: "project_persona_generation",
+  version: "2.0.0",
+  purpose: "Generate an adaptive set of three to five traditional evidence-led personas.",
   modelTier: "reasoning",
-  system: `You are an applied audience researcher. Identify candidate customer segments
-from the supplied evidence. A segment must represent a recurring difference that
-would materially change:
-
-- the person's information needs,
-- the prompts or searches they use,
-- the decision criteria they apply,
-- the proof they require,
-- the content they need,
-- or the product choice they make.
-
-Do not create lifestyle personas or decorative biographies.
-
-Requirements:
-
-1. Use only the supplied evidence.
-2. Prefer job, constraint, maturity, responsibility, use case, environment and
-   journey-stage differences over generic demographics.
-3. Do not force every evidence item into a segment.
-4. Allow one evidence item to relate to multiple segment dimensions.
-5. Identify contradictions and low-coverage groups.
-6. Produce between 3 and 7 candidate segments unless the evidence supports fewer.
-7. For each candidate provide the segment definition, distinguishing variables,
-   supporting evidence IDs, contradicting evidence IDs, coverage gaps, reasons it
-   would change prompts or content, overlap with other candidates, and a
-   merge/split recommendation.
-8. Do not assign a confidence score without explaining its components.
-9. Return valid JSON matching the supplied schema.
-
-Only cite evidence IDs that appear in the supplied evidence.`,
-  user: `Brand:
-{{brand_context}}
-
-Evidence summary:
-{{evidence_summary}}
-
-Retrieved evidence:
-{{evidence_records}}
-
-External audience signals:
-{{sparktoro_signals}}
-
-Search and market signals:
-{{dataforseo_signals}}`,
-};
-
-export const PERSONA_SYNTHESIS: PromptTemplate = {
-  id: "persona_synthesis",
-  version: "1.0.0",
-  purpose: "Synthesise an evidence-backed persona hypothesis for one segment.",
-  modelTier: "reasoning",
-  system: `You are an evidence-grounded persona synthesis system.
-
-Create a synthetic persona hypothesis for the supplied segment. The persona is
-not a real person and must not be presented as a digital twin. Its purpose is to
-organize evidence and generate testable information-needs hypotheses.
-
-Build the persona around exactly these core fields, each of which must be
-present at least once: job_to_be_done, constraint, success_metric,
-decision_criterion, vocabulary.
-
-For every claim:
-
-- label it observed, externally_supported, brand_assertion or inferred;
-- cite one or more evidence IDs;
-- set insufficient_evidence true rather than filling a gap creatively;
-- explain the confidence in one sentence.
-
-Also produce: recurring_question, objection, proof_preference,
-distinguishing_topic, coverage_gap, excluded_assumption, validation_benchmark
-(3 to 5), regeneration_trigger and information_depth entries.
-
-Rules:
-
-1. First-party direct evidence outranks external aggregate data.
-2. External audience data may support or challenge a claim but may not be
-   converted into individual behavior.
-3. Search volume is evidence of aggregate demand, not persona identity.
-4. Brand copy describes positioning, not customer belief.
-5. Never infer protected or sensitive characteristics.
-6. Never invent age, family, hobbies, personality, income or preferences.
-7. Resolve contradictions explicitly; do not average them away.
-8. Do not produce prompts or content in this step.
-9. Only cite evidence IDs that appear in the supplied evidence.
-10. Return valid JSON matching the supplied persona schema.`,
-  user: `Brand context:
-{{brand_context}}
-
-Selected segment:
-{{segment_candidate}}
-
-First-party evidence:
-{{first_party_evidence}}
-
-SparkToro audience signals:
-{{sparktoro_evidence}}
-
-DataForSEO search and review signals:
-{{dataforseo_evidence}}
-
-Existing personas for differentiation:
-{{other_personas}}
-
-Confidence rubric:
-{{confidence_rubric}}`,
+  system: `You are an evidence-led persona researcher. Generate three to five materially
+distinct descriptive personas, never fictional people. Names must describe the
+segment, such as “Security-Led Enterprise Evaluator”. Every insight must cite
+only supplied signal IDs. First-party observations outrank external aggregates.
+SparkToro demographics are audience distributions, never individual traits.
+Cover every requested demographic, firmographic, behavioral, decision, channel,
+keyword, and AI-topic section. If a SparkToro distribution is unavailable, leave
+that distribution empty. Do not invent unsupported data. Return strict JSON.`,
+  user: `Project:\n{{project_context}}\n\nAvailable first-party and SparkToro research signals:\n{{research_signals}}`,
 };
 
 export const PROMPT_GENERATION: PromptTemplate = {
-  id: "prompt_generation",
-  version: "1.0.0",
-  purpose: "Generate 15–30 persona-specific prompts with generic controls.",
+  id: "grounded_prompt_candidate_generation",
+  version: "4.0.0",
+  purpose: "Write two grounded prompt candidates for every approved coverage cell.",
   modelTier: "reasoning",
-  system: `You generate trackable AI-search query hypotheses from an evidence-backed
-persona.
-
-The prompt set must represent the information the persona needs, not phrases the
-brand wants to rank for.
-
-Generate between 15 and 30 prompts distributed across the applicable intents:
-problem_discovery, education, solution_exploration, comparison, evaluation,
-risk_reduction, purchase, implementation, optimization, troubleshooting.
-
-For every prompt:
-
-1. State the information need.
-2. State the intent and journey stage.
-3. Identify the persona fields that caused the prompt to be included
-   (constraints_used, decision_criteria_used, vocabulary_used).
-4. Cite supporting evidence IDs.
-5. Include the persona-specific prompt.
-6. Include a shorter generic control prompt where a meaningful control exists,
-   otherwise null.
-7. List the answer elements a useful response should contain.
-8. Explain in inclusion_rationale why this prompt was included.
-9. Mention brands or products only when the evidence indicates a branded
-   comparison need.
-10. Never insert the target brand merely to improve its measured visibility.
-11. Avoid near-duplicate prompts.
-12. Preserve customer vocabulary without making prompts unnaturally verbose.
-13. Mark execution_mode as standalone, conversational or both.
-14. Return valid JSON matching the prompt-set schema.
-
-The distribution should reflect evidence frequency and strategic importance, but
-must also preserve meaningful low-frequency constraints that could determine
-product fit.`,
-  user: `Persona:
-{{persona}}
-
-Supporting evidence:
-{{retrieved_evidence}}
-
-SparkToro topic and channel signals:
-{{sparktoro_signals}}
-
-DataForSEO keywords, intent and SERP signals:
-{{seo_signals}}
-
-Existing prompt library (avoid duplicating these):
-{{existing_prompts}}`,
+  system: `You create a production AI-visibility prompt library from an approved market brief,
+coverage blueprint, approved market-research facts, evidence-backed personas, and allowed research
+signals. Return exactly two candidates for every blueprint cell, preserving each plan_key and using
+candidate keys ending in -a and -b. Each candidate must naturally express that
+cell's persona, topic class, prompt type, business line, funnel stage, competitor, and buyer
+qualifier. Use the approved category vocabulary. Branded prompts must name the canonical brand;
+entity-disambiguation prompts must distinguish it from the supplied collision, alias, or parent;
+competitor-comparative prompts must name both the canonical brand and assigned competitor; and
+unbranded prompts must not name the canonical brand or its aliases. Never invent a competitor,
+product line, qualifier, or company fact. Vary phrasing, length, and question form across the full
+library. Do not use generic scaffolding such as “when fit, evidence, risk, and implementation effort
+all matter.” Cite only supplied research signal IDs. Prompts must sound like genuine buyer questions
+or requests, not keyword lists or internal instructions. Cite only supplied research fact IDs and
+research signal IDs. The two candidates for a cell must use meaningfully different syntax. Return
+strict JSON matching the schema.`,
+  user: `Project and approved prompt strategy:\n{{project_context}}\n\nApproved market brief:\n{{market_brief}}\n\nActive personas:\n{{persona_profiles}}\n\nApproved coverage blueprint:\n{{coverage_blueprint}}\n\nAllowed research signals:\n{{research_signals}}`,
 };
 
-export const CONTENT_GAP: PromptTemplate = {
-  id: "content_gap",
+export const MARKET_RESEARCH: PromptTemplate = {
+  id: "cited_market_research_brief",
   version: "1.0.0",
-  purpose: "Turn Profound performance gaps into reviewable content opportunities.",
+  purpose: "Create a cited market brief for prompt-library generation.",
   modelTier: "reasoning",
-  system: `You convert AI-search visibility gaps into content opportunities.
-
-For each gap determine: what the persona needed, what AI answers currently
-provide, whether the brand appears, which competitors appear, which sources are
-cited, which expected answer elements are missing, whether relevant content
-already exists, and whether the problem is content, evidence, authority,
-messaging or product fit.
-
-Do not assume every visibility gap requires a new article. Choose the most
-appropriate recommendation from: new_article, existing_article_update, faq,
-comparison_page, landing_page, product_page, documentation, case_study,
-homepage_update, structured_information_improvement, third_party_authority_or_pr,
-no_content_action, product_or_positioning_review.
-
-Rules:
-
-1. Every recommendation must reference the Profound prompt IDs and bucket IDs
-   it is based on. A "bucket" is one asset x dimension row from Profound's
-   visibility/citations reporting — there is no per-execution "run" and no
-   vendor-supplied raw answer text; do not refer to either.
-2. Every persona-specific claim must reference evidence IDs.
-3. Do not fabricate search demand figures; use only the supplied data.
-4. State a concrete validation method for each opportunity.
-5. Return valid JSON matching the supplied schema.`,
-  user: `Brand context:
-{{brand_context}}
-
-Persona:
-{{persona}}
-
-Prompt set and expected answer elements:
-{{prompt_set}}
-
-Profound performance (persona vs control):
-{{profound_performance}}
-
-Profound visibility/citation buckets and this product's own answer-coverage estimates:
-{{profound_results}}
-
-Existing page inventory:
-{{site_inventory}}
-
-Search demand (DataForSEO):
-{{search_data}}
-
-Evidence:
-{{evidence}}`,
+  system: `You are a market researcher preparing an auditable AI-visibility prompt brief. Search the
+web for current information and combine it with the supplied project and uploaded-source signals.
+Resolve the canonical brand, parent or operator, aliases, similarly named entities, category terms,
+business lines, primary competitors, realistic buyer qualifiers, and facts likely to become stale.
+Every fact must have a working source URL and concise claim. Prefer the canonical company site and
+credible primary sources. Do not infer an unsupported relationship. Preserve the supplied 50-prompt
+topic quotas. Use fact IDs fact-001, fact-002, and so on. Return strict JSON matching the schema.`,
+  user: `Project:\n{{project_context}}\n\nCurrent strategy:\n{{prompt_strategy}}\n\nUploaded-source signals:\n{{research_signals}}`,
 };
 
-export const SEO_BRIEF: PromptTemplate = {
-  id: "seo_brief",
+export const PROMPT_QUALITY_EVALUATION: PromptTemplate = {
+  id: "prompt_candidate_quality_evaluation",
   version: "1.0.0",
-  purpose: "Produce an evidence-backed SEO and AI-search content brief.",
+  purpose: "Score grounded prompt candidates against the production quality rubric.",
   modelTier: "reasoning",
-  system: `Create an evidence-backed SEO and AI-search content brief for the selected
-persona and opportunity.
-
-The brief must help a writer produce genuinely useful content. Do not optimize
-for keyword repetition or manufacture claims.
-
-Rules:
-
-1. Resolve the persona's information need before the brand's promotional goal.
-2. Cite evidence IDs for every persona-specific recommendation (constraints,
-   objections, decision criteria, outline sections).
-3. Reference Profound prompt IDs for every AI-search-specific recommendation.
-4. Use SEO metrics for prioritization, not as substitutes for relevance.
-5. Separate observed SERP patterns from recommended editorial decisions.
-6. Do not fabricate statistics, examples or customer quotes.
-7. List claims that must not be made.
-8. Return valid JSON matching the content-brief schema.`,
-  user: `Brand context:
-{{brand_context}}
-
-Persona:
-{{persona}}
-
-Opportunity:
-{{opportunity}}
-
-Prompt cluster:
-{{prompt_cluster}}
-
-Evidence:
-{{retrieved_evidence}}
-
-Keyword and SERP analysis:
-{{dataforseo_analysis}}
-
-Profound result analysis:
-{{profound_analysis}}
-
-Existing site content:
-{{site_inventory}}`,
+  system: `Evaluate every prompt candidate independently. Score category specificity 0-20; persona
+and qualifier fit 0-15; natural buyer language 0-15; AI-visibility measurement value 0-15;
+research support 0-15; distinctiveness 0-10; and metadata completeness 0-10. Use the supplied
+maximum semantic similarity when scoring distinctiveness. Add a hard failure for unsupported entity
+claims, invented competitors, branded leakage in an unbranded cell, missing required brands or
+competitors, missing category or business-line meaning, unknown citations, or obvious boilerplate.
+Do not reward keyword stuffing. Return exactly one assessment per candidate key and strict JSON.`,
+  user: `Approved strategy and market brief:\n{{project_context}}\n\nCoverage cells and candidates:\n{{candidates}}`,
 };
 
-export const PAGE_AUDIT: PromptTemplate = {
-  id: "page_audit",
-  version: "1.0.0",
-  purpose: "Audit a homepage or landing page against an approved persona.",
-  modelTier: "reasoning",
-  system: `Audit the supplied page for a selected evidence-backed persona.
-
-Evaluate: job-to-be-done clarity, persona relevance, vocabulary alignment,
-constraint coverage, objection coverage, decision-criteria coverage, proof
-quality, examples, use cases, information hierarchy, CTA fit, factual
-specificity, extractability, citation usefulness, unsupported claims and missing
-supporting pages.
-
-For each finding return severity, page element, page excerpt, persona
-requirement, evidence IDs, related Profound prompts, explanation, recommended
-change, suggested replacement or addition, and validation method.
-
-Do not recommend inserting every persona concern onto one page. Set
-belongs_on_supporting_page true for needs better handled elsewhere, and list
-those in supporting_page_recommendations.
-
-Return valid JSON matching the page-audit schema.`,
-  user: `Brand:
-{{brand_context}}
-
-Persona:
-{{persona}}
-
-Page:
-{{page_content}}
-
-Site inventory:
-{{site_inventory}}
-
-Profound and competitor evidence:
-{{market_evidence}}`,
-};
-
-export const ANSWER_COVERAGE_ESTIMATE: PromptTemplate = {
-  id: "answer_coverage_estimate",
-  version: "1.0.0",
-  purpose:
-    "Self-estimate which of a prompt's expected answer elements a well-informed answer would likely cover.",
-  modelTier: "economical",
-  system: `You estimate answer coverage for an AI-search prompt.
-
-Profound (the AI-visibility vendor this product tracks prompts through) exposes no
-raw text of any answer a model actually gave, so this estimate is this product's own
-judgment, not a vendor-confirmed fact. Everything you return will be labeled to the
-reviewer as a self-computed estimate, never presented as something Profound measured.
-
-Given a prompt, the persona it was written for, its expected answer elements, and
-whatever real evidence is available about how the brand currently performs for it
-(topic, cited domains from Profound retrieval), judge which expected elements a
-well-informed AI answer on this topic would likely already cover, and which it would
-likely still miss.
-
-Rules:
-
-1. Base "covered" only on what the supplied evidence plausibly supports; when in
-   doubt, put the element in "missing" rather than "covered" — this feature exists to
-   find gaps, not to look complete.
-2. Every expected element must appear in exactly one of "covered" or "missing".
-3. Do not invent expected elements that were not supplied.
-4. State confidence as a single 0-1 value reflecting how much real evidence — as
-   opposed to general topic knowledge — supported this judgment. Low confidence when
-   no retrieval evidence exists yet.
-5. Explain the reasoning in one or two sentences, naming which evidence (or the lack
-   of it) drove each coverage call.
-6. Return valid JSON matching the supplied schema.`,
-  user: `Prompt:
-{{prompt_text}}
-
-Persona:
-{{persona}}
-
-Expected answer elements:
-{{expected_answer_elements}}
-
-Real evidence available for this prompt (topic and cited domains from Profound retrieval, if any):
-{{real_evidence}}`,
-};
-
-export const WEB_RESEARCH_PLANNING: PromptTemplate = {
-  id: "web_research_planning",
-  version: "1.0.0",
-  purpose: "Turn brand context into a short list of externally-answerable research questions.",
-  modelTier: "economical",
-  system: `You plan deep research for a buyer-persona research tool.
-
-Given a brand's context — its description, competitors, and topics already
-surfaced by its existing segments and prompt sets — propose 3-6 specific
-research questions that a web search could actually answer: industry
-commentary, review-site sentiment, analyst coverage, forum discussion, press
-coverage. Do not propose a question only the brand itself could answer (its
-own pricing, its own roadmap) — that is not deep research, it is a survey.
-
-Each question should target a different angle. Do not propose near-duplicate
-questions.
-
-Return valid JSON matching the schema: a list of { query, rationale }.`,
-  user: `Brand context:
-{{brand_context}}`,
-};
-
-export const TEMPLATES = {
-  [EVIDENCE_EXTRACTION.id]: EVIDENCE_EXTRACTION,
-  [CANDIDATE_SEGMENTATION.id]: CANDIDATE_SEGMENTATION,
-  [PERSONA_SYNTHESIS.id]: PERSONA_SYNTHESIS,
-  [PROMPT_GENERATION.id]: PROMPT_GENERATION,
-  [CONTENT_GAP.id]: CONTENT_GAP,
-  [SEO_BRIEF.id]: SEO_BRIEF,
-  [PAGE_AUDIT.id]: PAGE_AUDIT,
-  [WEB_RESEARCH_PLANNING.id]: WEB_RESEARCH_PLANNING,
-  [ANSWER_COVERAGE_ESTIMATE.id]: ANSWER_COVERAGE_ESTIMATE,
-} as const satisfies Record<string, PromptTemplate>;
-
-export type TemplateId = keyof typeof TEMPLATES;
-
-export function renderTemplate(template: PromptTemplate, values: Record<string, string>): string {
-  return template.user.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-    const value = values[key];
-    return value === undefined || value === "" ? "(none supplied)" : value;
-  });
+export function renderTemplate(template: PromptTemplate, values: Record<string, string>) {
+  return template.user.replace(/{{([a-z0-9_]+)}}/gi, (_match, key: string) => values[key] ?? "");
 }
-
-export const CONFIDENCE_RUBRIC = `Confidence is a transparent heuristic, never a statistical
-probability that the persona is correct:
-
-field_confidence =
-    0.25 * first_party_strength
-  + 0.20 * cross_source_agreement
-  + 0.15 * evidence_quantity
-  + 0.15 * evidence_specificity
-  + 0.10 * recency
-  + 0.10 * segment_coverage
-  + 0.05 * external_support
-  - contradiction_penalty
-
-Source weights: direct first-party 1.00, Search Console or on-site search 0.90,
-verified review or attributed community source 0.80, SparkToro signal 0.70,
-DataForSEO search or SERP signal 0.65, brand-site assertion 0.40, unsupported
-model inference 0.00.`;

@@ -5,7 +5,6 @@ export default async function RootPage() {
   const session = await getSession();
   if (!session) redirect("/sign-in");
 
-  const first = session.memberships[0];
-  if (!first) redirect("/no-organization");
-  redirect(`/orgs/${first.organizationId}/brands`);
+  if (!session.memberships[0]) redirect("/no-organization");
+  redirect("/projects");
 }

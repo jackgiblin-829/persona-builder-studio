@@ -1,387 +1,222 @@
 import { z } from "zod";
 
-/**
- * Structured-output schemas.
- *
- * Every LLM response is validated against the Zod schema here before it is
- * persisted. The matching JSON Schema is what gets sent to the provider as a
- * strict structured-output format. `SCHEMA_VERSION` is stored on every
- * generated artefact so a schema change is detectable after the fact.
- */
+export const SCHEMA_VERSION = "4.0.0";
 
-export const SCHEMA_VERSION = "2026-08-06.1";
-
-export const EVIDENCE_CATEGORIES = [
-  "job_to_be_done",
-  "constraint",
-  "success_metric",
-  "decision_criterion",
-  "vocabulary",
-  "question",
-  "objection",
-  "pain_point",
-  "desired_outcome",
-  "behavior",
-  "comparison",
-  "implementation_requirement",
-  "proof_requirement",
-  "brand_claim",
-  "other",
-] as const;
-
-export const PROVENANCE = [
-  "observed",
-  "externally_supported",
-  "brand_assertion",
-  "inferred",
-] as const;
-
-export const JOURNEY_STAGES = [
-  "unaware",
-  "problem_discovery",
-  "education",
-  "solution_exploration",
-  "consideration",
-  "evaluation",
-  "purchase",
-  "implementation",
-  "optimization",
-  "troubleshooting",
-  "retention",
-  "unknown",
-] as const;
-
-export const SENTIMENTS = [
-  "positive",
-  "neutral",
-  "negative",
-  "concern",
-  "mixed",
-  "unknown",
-] as const;
-
-export const PROMPT_INTENTS = [
-  "problem_discovery",
-  "education",
-  "solution_exploration",
-  "comparison",
-  "evaluation",
-  "risk_reduction",
-  "purchase",
-  "implementation",
-  "optimization",
-  "troubleshooting",
-] as const;
-
-// ── Evidence extraction ─────────────────────────────────────────────────────
-
-export const evidenceItemSchema = z.object({
-  normalized_claim: z.string().min(3).max(600),
-  quote: z.string().min(1).max(4000),
-  category: z.enum(EVIDENCE_CATEGORIES),
-  provenance: z.enum(PROVENANCE),
-  journey_stage: z.enum(JOURNEY_STAGES),
-  sentiment: z.enum(SENTIMENTS),
-  entities: z.array(z.string().max(120)).max(20),
-  vocabulary: z.array(z.string().max(120)).max(20),
-  speaker: z.string().max(120).nullable(),
-  char_start: z.number().int().min(0),
-  char_end: z.number().int().min(0),
-  extraction_confidence: z.number().min(0).max(1),
-  quality_score: z.number().min(0).max(1),
-  uncertainty_note: z.string().max(500).nullable(),
-});
-
-export const evidenceExtractionSchema = z.object({
-  records: z.array(evidenceItemSchema).max(60),
-});
-
-export type EvidenceExtraction = z.infer<typeof evidenceExtractionSchema>;
-export type EvidenceItem = z.infer<typeof evidenceItemSchema>;
-
-// ── Candidate segmentation ──────────────────────────────────────────────────
-
-export const segmentCandidateSchema = z.object({
-  label: z.string().min(3).max(120),
-  slug: z.string().min(3).max(80),
-  definition: z.string().min(20).max(1200),
-  distinguishing_variables: z.array(z.string().max(160)).min(1).max(10),
-  supporting_evidence_ids: z.array(z.string()).max(200),
-  contradicting_evidence_ids: z.array(z.string()).max(100),
-  why_it_changes_prompts: z.string().min(20).max(1200),
-  coverage_gaps: z.array(z.string().max(300)).max(10),
-  overlaps: z
-    .array(
-      z.object({
-        segment_slug: z.string().max(80),
-        degree: z.number().min(0).max(1),
-        note: z.string().max(400),
-      }),
-    )
-    .max(10),
-  merge_split_recommendation: z.string().max(600).nullable(),
-  confidence_components: z.object({
-    first_party_strength: z.number().min(0).max(1),
-    cross_source_agreement: z.number().min(0).max(1),
-    evidence_quantity: z.number().min(0).max(1),
-    evidence_specificity: z.number().min(0).max(1),
-    recency: z.number().min(0).max(1),
-    segment_coverage: z.number().min(0).max(1),
-    external_support: z.number().min(0).max(1),
-    contradiction_penalty: z.number().min(0).max(1),
+const promptStrategySchema = z.object({
+  canonicalBrand: z.string().min(2).max(160),
+  parentCompany: z.string().max(160),
+  aliases: z.array(z.string().min(1).max(200)).max(40),
+  entityCollisions: z.array(z.string().min(1).max(200)).max(40),
+  categoryTerms: z.array(z.string().min(1).max(200)).min(1).max(40),
+  businessLines: z.array(z.string().min(1).max(200)).min(1).max(40),
+  competitors: z.array(z.string().min(1).max(200)).max(40),
+  buyerQualifiers: z.array(z.string().min(1).max(200)).max(40),
+  freshnessFacts: z.array(z.string().min(1).max(200)).max(40),
+  targetPromptCount: z.number().int().min(12).max(100),
+  topicTargets: z.object({
+    brand_entity_authority: z.number().int().min(0).max(100),
+    unbranded_category_discovery: z.number().int().min(0).max(100),
+    competitive_comparison: z.number().int().min(0).max(100),
+    buyer_education: z.number().int().min(0).max(100),
+    reputation_risk: z.number().int().min(0).max(100),
+    product_line_use_cases: z.number().int().min(0).max(100),
   }),
-  confidence_explanation: z.string().min(10).max(600),
+  personaPromptTargets: z.record(z.string(), z.number().int().min(0).max(100)),
 });
 
-export const segmentationSchema = z.object({
-  segments: z.array(segmentCandidateSchema).min(1).max(7),
+export const marketResearchBriefSchema = z.object({
+  summary: z.string().min(20).max(3000),
+  strategy: promptStrategySchema,
+  facts: z
+    .array(
+      z.object({
+        id: z.string().regex(/^fact-\d{3}$/),
+        kind: z.enum([
+          "brand_identity",
+          "entity_relationship",
+          "category",
+          "business_line",
+          "competitor",
+          "buyer_context",
+          "freshness_fact",
+        ]),
+        claim: z.string().min(5).max(1000),
+        sourceTitle: z.string().min(2).max(300),
+        sourceUrl: z.string().url().max(2000),
+        sourceType: z.enum(["web", "uploaded"]),
+        retrievedAt: z.string().datetime(),
+      }),
+    )
+    .min(8)
+    .max(80),
+  researchNotes: z.array(z.string().min(2).max(500)).max(20),
 });
+export type MarketResearchBriefGeneration = z.infer<typeof marketResearchBriefSchema>;
 
-export type SegmentationResult = z.infer<typeof segmentationSchema>;
-export type SegmentCandidateOutput = z.infer<typeof segmentCandidateSchema>;
-
-// ── Persona synthesis ───────────────────────────────────────────────────────
-
-export const PERSONA_FIELD_TYPES = [
-  "job_to_be_done",
-  "constraint",
-  "success_metric",
-  "decision_criterion",
-  "vocabulary",
-  "recurring_question",
-  "objection",
-  "proof_preference",
-  "distinguishing_topic",
-  "coverage_gap",
-  "excluded_assumption",
-  "validation_benchmark",
-  "regeneration_trigger",
-  "information_depth",
-] as const;
-
-export const personaFieldSchema = z.object({
-  field_type: z.enum(PERSONA_FIELD_TYPES),
-  statement: z.string().min(3).max(800),
-  provenance: z.enum(PROVENANCE),
-  supporting_evidence_ids: z.array(z.string()).max(100),
-  contradicting_evidence_ids: z.array(z.string()).max(50),
-  /** True when evidence could not support the claim — a gap, never a guess. */
-  insufficient_evidence: z.boolean(),
-  confidence_explanation: z.string().max(600),
-});
-
-export const personaSynthesisSchema = z.object({
-  name: z.string().min(3).max(120),
-  segment_definition: z.string().min(20).max(1200),
-  summary: z.string().min(20).max(1500),
-  journey_stages: z.array(z.enum(JOURNEY_STAGES)).max(6),
-  information_depth: z.string().max(300),
-  excluded_assumptions: z.array(z.string().max(300)).max(20),
-  fields: z.array(personaFieldSchema).min(5).max(80),
-});
-
-export type PersonaSynthesis = z.infer<typeof personaSynthesisSchema>;
-export type PersonaFieldOutput = z.infer<typeof personaFieldSchema>;
-
-// ── Prompt generation ───────────────────────────────────────────────────────
-
-export const generatedPromptSchema = z.object({
-  topic: z.string().min(2).max(160),
-  prompt_text: z.string().min(10).max(600),
-  generic_control_prompt: z.string().min(5).max(300).nullable(),
-  information_need: z.string().min(5).max(400),
-  intent: z.enum(PROMPT_INTENTS),
-  journey_stage: z.enum(JOURNEY_STAGES),
-  constraints_used: z.array(z.string().max(200)).max(10),
-  decision_criteria_used: z.array(z.string().max(200)).max(10),
-  vocabulary_used: z.array(z.string().max(120)).max(10),
-  expected_answer_elements: z.array(z.string().max(240)).min(1).max(10),
-  evidence_ids: z.array(z.string()).max(30),
-  inclusion_rationale: z.string().min(10).max(600),
-  execution_mode: z.enum(["standalone", "conversational", "both"]),
-  tracking_priority: z.enum(["low", "medium", "high"]),
+const signalReference = z.object({
+  signal_id: z.string().min(1),
   confidence: z.number().min(0).max(1),
 });
 
-export const promptGenerationSchema = z.object({
-  prompts: z.array(generatedPromptSchema).min(1).max(30),
-});
-
-export type PromptGeneration = z.infer<typeof promptGenerationSchema>;
-export type GeneratedPrompt = z.infer<typeof generatedPromptSchema>;
-
-// ── Deep web research planning ──────────────────────────────────────────────
-
-export const webResearchPlanSchema = z.object({
-  queries: z
+export const signalExtractionSchema = z.object({
+  signals: z
     .array(
       z.object({
-        query: z.string().min(5).max(200),
-        rationale: z.string().min(5).max(300),
+        category: z.enum([
+          "job_to_be_done",
+          "motivation",
+          "goal",
+          "pain_point",
+          "constraint",
+          "success_measure",
+          "decision_criterion",
+          "objection",
+          "question",
+          "proof_need",
+          "vocabulary",
+          "buying_trigger",
+          "content_preference",
+          "behavior",
+          "brand_name",
+          "parent_company",
+          "brand_alias",
+          "entity_collision",
+          "category_term",
+          "business_line",
+          "competitor",
+          "buyer_qualifier",
+          "freshness_fact",
+          "other",
+        ]),
+        display_text: z.string().min(2).max(800),
+        quote: z.string().min(1).max(1200),
+        source_location: z.string().min(1).max(300),
+        confidence: z.number().min(0).max(1),
       }),
     )
-    .min(1)
-    .max(6),
+    .max(30),
 });
+export type SignalExtraction = z.infer<typeof signalExtractionSchema>;
 
-export type WebResearchPlan = z.infer<typeof webResearchPlanSchema>;
-
-// ── Content gap / opportunities ─────────────────────────────────────────────
-
-export const RECOMMENDATION_TYPES = [
-  "new_article",
-  "existing_article_update",
-  "faq",
-  "comparison_page",
-  "landing_page",
-  "product_page",
-  "documentation",
-  "case_study",
-  "homepage_update",
-  "structured_information_improvement",
-  "third_party_authority_or_pr",
-  "no_content_action",
-  "product_or_positioning_review",
-] as const;
-
-export const GAP_TYPES = ["content", "evidence", "authority", "messaging", "product_fit"] as const;
-
-export const opportunitySchema = z.object({
-  title: z.string().min(5).max(200),
-  problem_statement: z.string().min(20).max(1500),
-  performance_gap: z.string().min(10).max(1500),
-  gap_type: z.enum(GAP_TYPES),
-  recommendation: z.enum(RECOMMENDATION_TYPES),
-  recommendation_rationale: z.string().min(20).max(1500),
-  relevant_profound_prompt_ids: z.array(z.string()).max(50),
-  relevant_bucket_ids: z.array(z.string()).max(50),
-  competitors: z.array(z.string().max(160)).max(20),
-  citation_sources: z.array(z.string().max(240)).max(30),
-  missing_answer_elements: z.array(z.string().max(240)).max(20),
-  existing_page_url: z.string().max(2000).nullable(),
-  priority: z.enum(["p1", "p2", "p3"]),
-  estimated_effort: z.enum(["small", "medium", "large"]),
-  evidence_ids: z.array(z.string()).max(50),
-  validation_method: z.string().min(10).max(600),
-});
-
-export const opportunityGenerationSchema = z.object({
-  opportunities: z.array(opportunitySchema).max(12),
-});
-
-export type OpportunityGeneration = z.infer<typeof opportunityGenerationSchema>;
-export type OpportunityOutput = z.infer<typeof opportunitySchema>;
-
-// ── SEO brief (§29 — all required sections) ─────────────────────────────────
-
-export const briefSchema = z.object({
-  working_title: z.string().min(5).max(240),
-  target_persona: z.string().min(3).max(200),
-  job_to_be_done: z.string().min(10).max(800),
-  primary_information_need: z.string().min(10).max(800),
-  intent: z.enum(PROMPT_INTENTS),
-  journey_stage: z.enum(JOURNEY_STAGES),
-  primary_query: z.string().min(3).max(300),
-  supporting_queries: z.array(z.string().max(300)).max(20),
-  relevant_profound_prompts: z
-    .array(
-      z.object({
-        profound_prompt_id: z.string().max(120),
-        prompt_text: z.string().max(600),
-        gap: z.string().max(600),
-      }),
-    )
-    .max(20),
-  profound_gap_summary: z.string().max(2000),
-  reader_existing_knowledge: z.string().max(1200),
-  constraints: z
-    .array(z.object({ statement: z.string().max(400), evidence_ids: z.array(z.string()).max(20) }))
-    .max(20),
-  objections: z
-    .array(z.object({ statement: z.string().max(400), evidence_ids: z.array(z.string()).max(20) }))
-    .max(20),
-  decision_criteria: z
-    .array(z.object({ statement: z.string().max(400), evidence_ids: z.array(z.string()).max(20) }))
-    .max(20),
-  expected_answer_elements: z.array(z.string().max(300)).max(25),
-  recommended_content_type: z.string().max(200),
-  recommended_outline: z
-    .array(
-      z.object({
-        heading: z.string().max(240),
-        purpose: z.string().max(600),
-        must_cover: z.array(z.string().max(300)).max(10),
-        evidence_ids: z.array(z.string()).max(20),
-      }),
-    )
-    .min(1)
-    .max(20),
-  customer_vocabulary: z.array(z.string().max(160)).max(40),
-  concepts_and_entities: z.array(z.string().max(200)).max(40),
-  required_evidence: z.array(z.string().max(400)).max(20),
-  required_examples: z.array(z.string().max(400)).max(20),
-  source_requirements: z.array(z.string().max(400)).max(20),
-  product_proof: z.array(z.string().max(400)).max(20),
-  competitor_coverage: z.array(z.string().max(400)).max(20),
-  internal_links: z
-    .array(z.object({ url: z.string().max(2000), rationale: z.string().max(400) }))
-    .max(20),
-  conversion_action: z.string().max(400),
-  unsupported_claims_to_avoid: z.array(z.string().max(400)).max(20),
-  final_quality_checklist: z.array(z.string().max(400)).min(3).max(25),
-});
-
-export type BriefOutput = z.infer<typeof briefSchema>;
-
-// ── Page audit (§30) ────────────────────────────────────────────────────────
-
-export const auditFindingSchema = z.object({
-  severity: z.enum(["critical", "high", "medium", "low", "info"]),
-  page_element: z.string().min(2).max(240),
-  page_excerpt: z.string().max(1200).nullable(),
-  persona_requirement: z.string().min(5).max(800),
-  explanation: z.string().min(10).max(1500),
-  recommended_change: z.string().min(10).max(1500),
-  suggested_replacement: z.string().max(2000).nullable(),
-  validation_method: z.string().min(5).max(600),
-  evidence_ids: z.array(z.string()).max(30),
-  related_prompt_ids: z.array(z.string()).max(30),
-  related_profound_prompt_ids: z.array(z.string()).max(30),
-  /** Distinguishes homepage requirements from supporting-page content. */
-  belongs_on_supporting_page: z.boolean(),
-});
-
-export type AuditFindingOutput = z.infer<typeof auditFindingSchema>;
-
-export const pageAuditSchema = z.object({
-  summary: z.string().min(20).max(2000),
-  scores: z.record(z.string(), z.number().min(0).max(1)),
-  findings: z.array(auditFindingSchema).max(40),
-  supporting_page_recommendations: z
-    .array(
-      z.object({
-        need: z.string().max(400),
-        suggested_page_type: z.string().max(160),
-        rationale: z.string().max(600),
-      }),
-    )
-    .max(15),
-});
-
-export type PageAuditOutput = z.infer<typeof pageAuditSchema>;
-
-// ── Answer-coverage estimate (Phase 2, redesign 2026-08-10) ─────────────────
-//
-// Profound exposes no raw-answer text, so this product estimates coverage of
-// a prompt's expected answer elements itself. Always stored with
-// `dataOrigin: "local"` — a self-computed judgment, never a vendor-confirmed
-// fact — see `src/jobs/handlers/estimate-answer-coverage.ts`.
-
-export const answerCoverageEstimateSchema = z.object({
-  covered: z.array(z.string().max(240)).max(30),
-  missing: z.array(z.string().max(240)).max(30),
+const insightSchema = z.object({
+  text: z.string().min(2).max(800),
+  signal_ids: z.array(z.string().min(1)).min(1).max(12),
   confidence: z.number().min(0).max(1),
-  rationale: z.string().min(10).max(1000),
 });
 
-export type AnswerCoverageEstimateOutput = z.infer<typeof answerCoverageEstimateSchema>;
+const distributionSchema = z.object({
+  label: z.string().min(1).max(160),
+  value: z.number(),
+  unit: z.enum(["percent", "index", "count"]),
+  signal_ids: z.array(z.string().min(1)).min(1).max(12),
+});
+
+export const personaGenerationSchema = z.object({
+  methodology_summary: z.string().min(20).max(2000),
+  personas: z
+    .array(
+      z.object({
+        name: z.string().min(5).max(100),
+        slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+        description: z.string().min(20).max(1000),
+        summary: z.string().min(20).max(1600),
+        demographics: z.object({
+          age: z.array(distributionSchema).max(20),
+          gender: z.array(distributionSchema).max(20),
+          income: z.array(distributionSchema).max(20),
+          education: z.array(distributionSchema).max(20),
+          geography: z.array(distributionSchema).max(30),
+        }),
+        firmographics: z.object({
+          roles: z.array(insightSchema).min(1).max(12),
+          seniority: z.array(insightSchema).min(1).max(12),
+          departments: z.array(insightSchema).min(1).max(12),
+          industries: z.array(insightSchema).min(1).max(12),
+          company_size: z.array(insightSchema).min(1).max(12),
+          experience: z.array(insightSchema).min(1).max(12),
+        }),
+        jobs_to_be_done: z.array(insightSchema).min(1).max(12),
+        motivations: z.array(insightSchema).min(1).max(12),
+        goals: z.array(insightSchema).min(1).max(12),
+        pain_points: z.array(insightSchema).min(1).max(12),
+        constraints: z.array(insightSchema).min(1).max(12),
+        success_measures: z.array(insightSchema).min(1).max(12),
+        decision_criteria: z.array(insightSchema).min(1).max(12),
+        objections: z.array(insightSchema).min(1).max(12),
+        common_questions: z.array(insightSchema).min(1).max(12),
+        proof_needs: z.array(insightSchema).min(1).max(12),
+        vocabulary: z.array(insightSchema).min(1).max(16),
+        buying_triggers: z.array(insightSchema).min(1).max(12),
+        channels: z.array(insightSchema).min(1).max(16),
+        communities: z.array(insightSchema).min(1).max(16),
+        websites: z.array(insightSchema).min(1).max(16),
+        content_preferences: z.array(insightSchema).min(1).max(12),
+        keywords: z.array(insightSchema).min(1).max(20),
+        ai_prompt_topics: z.array(insightSchema).min(1).max(20),
+        confidence: z.number().min(0).max(1),
+      }),
+    )
+    .min(3)
+    .max(5),
+});
+export type PersonaGeneration = z.infer<typeof personaGenerationSchema>;
+
+export const promptCandidateLibrarySchema = z.object({
+  blueprint_summary: z.string().min(20).max(2000),
+  candidates: z
+    .array(
+      z.object({
+        plan_key: z.string().regex(/^cell-\d{3}$/),
+        candidate_key: z.string().regex(/^cell-\d{3}-[ab]$/),
+        prompt_text: z.string().min(12).max(500),
+        intent: z.string().min(2).max(160),
+        expected_answer_elements: z.array(z.string().min(2).max(300)).min(2).max(10),
+        signal_ids: z.array(z.string().min(1)).min(1).max(16),
+        research_fact_ids: z
+          .array(z.string().regex(/^fact-\d{3}$/))
+          .min(1)
+          .max(16),
+      }),
+    )
+    .min(2)
+    .max(200),
+});
+export type PromptCandidateLibrary = z.infer<typeof promptCandidateLibrarySchema>;
+
+export const promptQualityEvaluationSchema = z.object({
+  assessments: z
+    .array(
+      z.object({
+        candidate_key: z.string().regex(/^cell-\d{3}-[ab]$/),
+        category_specificity: z.number().int().min(0).max(20),
+        persona_qualifier_fit: z.number().int().min(0).max(15),
+        natural_buyer_language: z.number().int().min(0).max(15),
+        measurement_value: z.number().int().min(0).max(15),
+        research_support: z.number().int().min(0).max(15),
+        distinctiveness: z.number().int().min(0).max(10),
+        metadata_completeness: z.number().int().min(0).max(10),
+        hard_fail_reasons: z.array(z.string().min(2).max(300)).max(10),
+        explanation: z.string().min(5).max(600),
+      }),
+    )
+    .min(2)
+    .max(200),
+});
+export type PromptQualityEvaluation = z.infer<typeof promptQualityEvaluationSchema>;
+
+// Backward-compatible alias for callers that only need the selected prompt shape.
+export const promptLibraryGenerationSchema = z.object({
+  blueprint_summary: z.string().min(20).max(2000),
+  prompts: z.array(
+    z.object({
+      plan_key: z.string().regex(/^cell-\d{3}$/),
+      prompt_text: z.string().min(12).max(500),
+      intent: z.string().min(2).max(160),
+      expected_answer_elements: z.array(z.string().min(2).max(300)).min(2).max(10),
+      signal_ids: z.array(z.string().min(1)).min(1).max(16),
+    }),
+  ),
+});
+export type PromptLibraryGeneration = z.infer<typeof promptLibraryGenerationSchema>;
+
+export { signalReference };

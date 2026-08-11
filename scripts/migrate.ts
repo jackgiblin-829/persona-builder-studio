@@ -4,23 +4,19 @@ loadEnv();
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import postgres from "postgres";
+import { resolveDatabaseUrl } from "./database-url";
 
 /**
  * Applies drizzle-generated SQL migrations in order, tracked in
- * `__pes_migrations`. Runs `CREATE EXTENSION vector` first because the schema
- * depends on it. Idempotent: already-applied files are skipped.
+ * `__pes_migrations`. Idempotent: already-applied files are skipped.
  */
 async function main() {
-  const url = process.argv.includes("--test")
-    ? (process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL)
-    : process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is not set");
+  const url = resolveDatabaseUrl(process.argv.includes("--test"));
 
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   const target = new URL(url).pathname.replace(/^\//, "");
 
   try {
-    await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS vector`);
     await sql.unsafe(`
       CREATE TABLE IF NOT EXISTS __pes_migrations (
         name text PRIMARY KEY,
@@ -33,9 +29,35 @@ async function main() {
       .filter((f) => f.endsWith(".sql"))
       .sort();
 
-    const applied = new Set(
+    let applied = new Set(
       (await sql<{ name: string }[]>`SELECT name FROM __pes_migrations`).map((r) => r.name),
     );
+
+    // The project-first rework intentionally has no compatibility migration.
+    // If this database carries any superseded migration name, reset the public
+    // schema before applying the new single initial migration.
+    const currentNames = new Set(files);
+    if ([...applied].some((name) => !currentNames.has(name))) {
+      if (
+        process.env.NODE_ENV === "production" &&
+        process.env.ALLOW_PERSONA_STUDIO_RESET !== "true"
+      ) {
+        throw new Error(
+          "The Persona Builder Studio rework requires a full database reset. Set ALLOW_PERSONA_STUDIO_RESET=true for this intentional production migration.",
+        );
+      }
+      console.warn(
+        `${target}: legacy migration history found; performing the intentional project-first reset`,
+      );
+      await sql.unsafe(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`);
+      await sql.unsafe(`
+        CREATE TABLE __pes_migrations (
+          name text PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+      applied = new Set<string>();
+    }
 
     let count = 0;
     for (const file of files) {

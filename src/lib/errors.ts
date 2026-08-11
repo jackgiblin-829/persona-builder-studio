@@ -19,9 +19,6 @@ export type ErrorCode =
   | "vendor_unavailable"
   | "vendor_not_configured"
   | "schema_validation"
-  | "dry_run_required"
-  | "dry_run_unsupported"
-  | "unsafe_url"
   | "internal";
 
 export class AppError extends Error {
@@ -59,8 +56,6 @@ function defaultStatus(code: ErrorCode): number {
       return 404;
     case "validation":
     case "schema_validation":
-    case "unsafe_url":
-    case "dry_run_required":
       return 400;
     case "conflict":
     case "immutable":
@@ -155,26 +150,6 @@ export class VendorNotConfiguredError extends VendorError {
         retryable: false,
       },
     );
-  }
-}
-
-export class DryRunRequiredError extends AppError {
-  constructor(message = "A dry run must be completed and approved before prompts can be created.") {
-    super("dry_run_required", message);
-  }
-}
-
-export class DryRunUnsupportedError extends AppError {
-  constructor(
-    message = "Profound did not accept a dry-run request. Deployment stopped — prompts were not created.",
-  ) {
-    super("dry_run_unsupported", message, { status: 502 });
-  }
-}
-
-export class UnsafeUrlError extends AppError {
-  constructor(reason: string) {
-    super("unsafe_url", `URL rejected: ${reason}`);
   }
 }
 

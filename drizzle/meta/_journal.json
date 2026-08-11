@@ -5,29 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1786029047733,
-      "tag": "0000_init",
+      "when": 1786469019957,
+      "tag": "0000_persona_studio_rework",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1786046745418,
-      "tag": "0001_prompt_field_links",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1786129970282,
-      "tag": "0002_cuddly_sabretooth",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1786385420926,
-      "tag": "0003_profound_results_buckets_add",
+      "when": 1786475181927,
+      "tag": "0001_bent_penance",
       "breakpoints": true
     }
   ]

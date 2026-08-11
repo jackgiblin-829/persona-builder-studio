@@ -18,6 +18,7 @@ export function SubmitButton({
   name,
   value,
   form,
+  disabled = false,
 }: {
   label: string;
   pendingLabel?: string;
@@ -30,6 +31,7 @@ export function SubmitButton({
   value?: string;
   /** Associates the button with a form it is not nested inside. */
   form?: string;
+  disabled?: boolean;
 }) {
   const { pending } = useFormStatus();
   return (
@@ -37,7 +39,7 @@ export function SubmitButton({
       type="submit"
       variant={variant}
       size={size}
-      disabled={pending}
+      disabled={pending || disabled}
       className={className}
       name={name}
       value={value}

@@ -15,6 +15,8 @@ export type StructuredRequest<T> = {
   jsonSchema: Record<string, unknown>;
   modelTier: ModelTier;
   maxRetries?: number;
+  /** Enables the Responses API built-in web-search tool for source-backed research. */
+  webSearch?: boolean;
   /** Passed through to mock adapters so fixtures can be selected. */
   mockKey?: string;
   mockContext?: Record<string, unknown>;
@@ -49,39 +51,10 @@ export type EmbeddingResult = {
   costCents: number;
 };
 
-export type WebResearchRequest = {
-  /** A single, specific research question or topic. */
-  query: string;
-  /** Brand/competitor context so the search stays relevant. */
-  brandContext: string;
-  /** Passed through to the mock adapter so fixtures can be selected. */
-  mockContext?: Record<string, unknown>;
-};
-
-export type WebResearchCitation = {
-  url: string;
-  title: string | null;
-};
-
-export type WebResearchResult = {
-  /** Synthesized prose findings for this query, citation markers inline. */
-  findings: string;
-  citations: WebResearchCitation[];
-  modelProvider: string;
-  modelId: string;
-  dataOrigin: "mock" | "live";
-  tokensIn: number;
-  tokensOut: number;
-  costCents: number;
-  raw?: Record<string, unknown>;
-};
-
 export interface OpenAIAdapter {
   readonly mode: "mock" | "live";
   generateStructured<T>(request: StructuredRequest<T>): Promise<StructuredResult<T>>;
   embed(request: EmbeddingRequest): Promise<EmbeddingResult>;
-  /** Runs one web search and returns synthesized findings with citations. */
-  webSearch(request: WebResearchRequest): Promise<WebResearchResult>;
 }
 
 export const EMBEDDING_DIMENSIONS = 1536;

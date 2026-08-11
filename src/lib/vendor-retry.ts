@@ -1,8 +1,8 @@
 import "server-only";
 
 /**
- * Shared transport-retry math for vendor adapters (DataForSEO, Profound,
- * SparkToro): every adapter still decides *which* methods/statuses are
+ * Shared transport-retry math for vendor adapters. Every adapter still decides
+ * which methods/statuses are
  * eligible to retry, but the delay computation is one implementation.
  */
 

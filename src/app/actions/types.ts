@@ -16,7 +16,7 @@ export async function runAction<S extends z.ZodTypeAny>(
   formData: FormData,
   schema: S,
   handler: (input: z.infer<S>) => Promise<ActionState | void>,
-  options: { raw?: Record<string, unknown> } = {},
+  options: { raw?: Record<string, unknown>; preserveFields?: string[] } = {},
 ): Promise<ActionState> {
   try {
     await assertCsrf(formData);
@@ -27,6 +27,7 @@ export async function runAction<S extends z.ZodTypeAny>(
         status: "error",
         message: "Please correct the highlighted fields.",
         fieldErrors: flattenIssues(parsed.error),
+        data: preservedFormData(formData, options.preserveFields),
       };
     }
     const result = await handler(parsed.data);
@@ -34,7 +35,11 @@ export async function runAction<S extends z.ZodTypeAny>(
   } catch (error) {
     if (isRedirectError(error)) throw error;
     const publicError = toPublicError(error);
-    return { status: "error", message: publicError.message };
+    return {
+      status: "error",
+      message: publicError.message,
+      data: preservedFormData(formData, options.preserveFields),
+    };
   }
 }
 
@@ -45,6 +50,22 @@ function flattenIssues(error: z.ZodError): Record<string, string[]> {
     (out[key] ??= []).push(issue.message);
   }
   return out;
+}
+
+function preservedFormData(
+  formData: FormData,
+  preserveFields: string[] | undefined,
+): Record<string, unknown> | undefined {
+  if (!preserveFields?.length) return undefined;
+  const values: Record<string, string | string[]> = {};
+  for (const field of preserveFields) {
+    const entries = formData
+      .getAll(field)
+      .filter((value): value is string => typeof value === "string");
+    if (entries.length === 0) continue;
+    values[field] = entries.length === 1 ? (entries[0] ?? "") : entries;
+  }
+  return { formValues: values };
 }
 
 /** Next.js signals redirect() and notFound() by throwing — let those through. */

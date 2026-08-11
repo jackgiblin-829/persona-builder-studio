@@ -6,7 +6,7 @@ export default function NoOrganizationPage() {
       <h1 className="text-lg font-semibold">No organization</h1>
       <p className="text-sm text-ink-muted">
         Your account is not a member of any organization yet. An organization owner needs to invite
-        you before you can open a brand.
+        you before you can open a project.
       </p>
       <SignOutButton />
     </main>

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { AppShell, orgNav } from "@/components/app-shell";
+import { AppShell, globalNav } from "@/components/app-shell";
 import { getSession } from "@/lib/auth/session";
 
 export default async function OrgLayout({
@@ -18,7 +18,12 @@ export default async function OrgLayout({
   const pathname = (await headers()).get("x-pathname") ?? "";
 
   return (
-    <AppShell session={session} organizationId={orgId} nav={orgNav(orgId)} currentPath={pathname}>
+    <AppShell
+      session={session}
+      organizationId={orgId}
+      nav={globalNav(orgId)}
+      currentPath={pathname}
+    >
       {children}
     </AppShell>
   );

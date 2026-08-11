@@ -2,23 +2,25 @@ import "server-only";
 import { env } from "@/lib/env";
 import { VendorNotConfiguredError } from "@/lib/errors";
 import { resolveIntegration } from "@/services/integrations";
+import type { VendorMode } from "@/services/integrations";
 import { LiveSparktoroAdapter } from "./live";
 import { MockSparktoroAdapter } from "./mock";
 import type { SparktoroAdapter } from "./types";
 
-export type * from "./types";
+export * from "./types";
 
 /**
- * Resolves the adapter once, before the call (ADR-009) — same shape as
- * `getDataForSeoAdapter` and `getProfoundAdapter`. A live adapter that fails
- * throws; nothing here ever degrades to the mock.
+ * Resolves the adapter once before the call. A live adapter that fails throws;
+ * nothing here ever degrades to the mock.
  */
 export async function getSparktoroAdapter(
   organizationId: string,
+  modeOverride?: VendorMode,
 ): Promise<{ adapter: SparktoroAdapter; mode: "live" | "mock" }> {
   const resolved = await resolveIntegration(organizationId, "sparktoro");
+  const mode = modeOverride ?? resolved.mode;
 
-  if (resolved.mode === "live") {
+  if (mode === "live") {
     if (resolved.missingFields.length > 0) {
       throw new VendorNotConfiguredError("sparktoro", "getAdapter");
     }

@@ -1,7 +1,11 @@
 import { config as loadEnv } from "../src/lib/dotenv";
+import { resolveDatabaseUrl } from "./database-url";
 loadEnv();
 
 async function main() {
+  if (process.argv.includes("--test")) {
+    process.env.DATABASE_URL = resolveDatabaseUrl(true);
+  }
   const { runSeed } = await import("../src/seed/run");
   const summary = await runSeed({ fresh: !process.argv.includes("--keep") });
   console.log("\nSeed complete.\n");
