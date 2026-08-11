@@ -9,6 +9,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import {
   applyPromptStrategySuggestions,
   createProject,
+  deleteProject,
   projectInputSchema,
   promptStrategyInputSchema,
   updateAudienceDescription,
@@ -50,6 +51,19 @@ export async function createProjectAction(_previous: ActionState, formData: Form
   return result;
 }
 
+export async function deleteProjectAction(_previous: ActionState, formData: FormData) {
+  let deleted = false;
+  const result = await runAction(formData, projectSchema, async (input) => {
+    const ctx = await requireProjectAccess(input.projectId);
+    await deleteProject(ctx);
+    deleted = true;
+    revalidatePath("/projects");
+    return { status: "ok", message: "Project deleted." };
+  });
+  if (deleted) redirect("/projects");
+  return result;
+}
+
 const audienceSchema = z.object({ projectId: z.string().min(1), audienceDescription: z.string() });
 export async function updateAudienceAction(_previous: ActionState, formData: FormData) {
   return runAction(formData, audienceSchema, async (input) => {
@@ -69,7 +83,10 @@ export async function updatePromptStrategyAction(_previous: ActionState, formDat
     const ctx = await requireProjectAccess(input.projectId);
     await updatePromptStrategy(ctx, input);
     revalidatePath(`/projects/${input.projectId}/prompts`);
-    return { status: "ok", message: "Prompt strategy saved. Review coverage before generating." };
+    return {
+      status: "ok",
+      message: "Query Funnel strategy saved. Review the pathway shape before generating.",
+    };
   });
 }
 
@@ -171,7 +188,7 @@ export async function generatePromptsAction(_previous: ActionState, formData: Fo
     return {
       status: "ok",
       message:
-        "Prompt generation started for every active persona. Existing sets remain available until the replacement succeeds.",
+        "Query Funnel generation started for every active persona. Existing baselines remain available until the replacement succeeds.",
     };
   });
 }
@@ -217,7 +234,7 @@ export async function approvePromptLibraryAction(_previous: ActionState, formDat
     const ctx = await requireProjectAccess(input.projectId);
     await approveCurrentPromptLibrary(ctx);
     revalidatePath(`/projects/${input.projectId}/prompts`);
-    return { status: "ok", message: "All quality-passed prompts approved for export." };
+    return { status: "ok", message: "All quality-passed prompts approved for baseline export." };
   });
 }
 
@@ -243,7 +260,7 @@ export async function regeneratePromptAction(_previous: ActionState, formData: F
     const ctx = await requireProjectAccess(input.projectId);
     await regenerateSinglePrompt(ctx, input.promptId);
     revalidatePath(`/projects/${input.projectId}/prompts`);
-    return { status: "ok", message: "This coverage cell was regenerated and rescored." };
+    return { status: "ok", message: "This funnel cell was regenerated and rescored." };
   });
 }
 
@@ -268,7 +285,7 @@ export async function savePersonaAction(_previous: ActionState, formData: FormDa
     return {
       status: "ok",
       message:
-        "New persona version saved. Its prompt set is refreshing automatically when one already exists.",
+        "New persona version saved. Its Query Funnel baseline is refreshing automatically when one already exists.",
     };
   });
 }

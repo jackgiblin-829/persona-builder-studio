@@ -41,6 +41,20 @@ export type QuestionArchetype = (typeof QUESTION_ARCHETYPES)[number];
 export const FUNNEL_STAGES = ["awareness", "consideration", "decision"] as const;
 export type FunnelStage = (typeof FUNNEL_STAGES)[number];
 
+export const FUNNEL_STAGE_LABELS: Record<FunnelStage, string> = {
+  awareness: "Top of funnel",
+  consideration: "Middle of funnel",
+  decision: "Bottom of funnel",
+};
+
+export type FunnelTargets = Record<FunnelStage, number>;
+
+export const DEFAULT_FUNNEL_TARGETS: FunnelTargets = {
+  awareness: 30,
+  consideration: 15,
+  decision: 5,
+};
+
 export type PromptStrategy = {
   canonicalBrand: string;
   parentCompany: string;
@@ -51,9 +65,9 @@ export type PromptStrategy = {
   competitors: string[];
   buyerQualifiers: string[];
   freshnessFacts: string[];
+  pathwaysPerPersona: number;
   targetPromptCount: number;
-  topicTargets: Record<TopicClass, number>;
-  personaPromptTargets: Record<string, number>;
+  funnelTargets: FunnelTargets;
 };
 
 export type PromptPersona = { slug: string; name: string };
@@ -66,29 +80,14 @@ export type CoverageCell = {
   promptType: PromptType;
   questionArchetype: QuestionArchetype;
   funnelStage: FunnelStage;
+  pathwayKey: string;
+  pathwayLabel: string;
+  parentKey: string | null;
   geoCategory: GeoCategory;
   businessLine: string;
   signalTracked: string;
   buyerQualifier: string;
   competitor: string;
-};
-
-const ARCHETYPES_BY_TOPIC: Record<TopicClass, QuestionArchetype[]> = {
-  brand_entity_authority: ["entity_verification", "risk", "workflow"],
-  unbranded_category_discovery: ["recommendation", "worth_it", "comparison"],
-  competitive_comparison: ["comparison", "migration", "recommendation"],
-  buyer_education: ["how_to", "workflow", "worth_it"],
-  reputation_risk: ["risk", "worth_it", "migration"],
-  product_line_use_cases: ["workflow", "how_to", "recommendation"],
-};
-
-export const DEFAULT_TOPIC_TARGETS: Record<TopicClass, number> = {
-  brand_entity_authority: 6,
-  unbranded_category_discovery: 10,
-  competitive_comparison: 9,
-  buyer_education: 10,
-  reputation_risk: 7,
-  product_line_use_cases: 8,
 };
 
 export const EMPTY_PROMPT_STRATEGY: PromptStrategy = {
@@ -101,9 +100,9 @@ export const EMPTY_PROMPT_STRATEGY: PromptStrategy = {
   competitors: [],
   buyerQualifiers: [],
   freshnessFacts: [],
+  pathwaysPerPersona: 3,
   targetPromptCount: 50,
-  topicTargets: { ...DEFAULT_TOPIC_TARGETS },
-  personaPromptTargets: {},
+  funnelTargets: { ...DEFAULT_FUNNEL_TARGETS },
 };
 
 export function defaultPromptStrategy(brand: string, description = ""): PromptStrategy {
@@ -124,12 +123,13 @@ export function defaultPromptStrategy(brand: string, description = ""): PromptSt
     competitors: [],
     buyerQualifiers: [],
     freshnessFacts: [],
-    topicTargets: { ...DEFAULT_TOPIC_TARGETS },
+    pathwaysPerPersona: 3,
+    funnelTargets: { ...DEFAULT_FUNNEL_TARGETS },
   };
 }
 
 export function strategyPromptCount(strategy: PromptStrategy) {
-  return TOPIC_CLASSES.reduce((total, topic) => total + strategy.topicTargets[topic], 0);
+  return FUNNEL_STAGES.reduce((total, stage) => total + strategy.funnelTargets[stage], 0);
 }
 
 export function strategyReadiness(strategy: PromptStrategy) {
@@ -137,82 +137,42 @@ export function strategyReadiness(strategy: PromptStrategy) {
   if (!strategy.canonicalBrand.trim()) blockers.push("Add the canonical brand name.");
   if (!strategy.categoryTerms.length) blockers.push("Add at least one category term.");
   if (!strategy.businessLines.length) blockers.push("Add at least one business line.");
-  if (strategy.topicTargets.competitive_comparison > 0 && !strategy.competitors.length) {
-    blockers.push("Add a competitor or set the competitive-comparison target to zero.");
-  }
-  if (
-    strategy.topicTargets.brand_entity_authority > 1 &&
-    !strategy.parentCompany &&
-    !strategy.aliases.length &&
-    !strategy.entityCollisions.length
-  ) {
-    blockers.push("Add a parent company, alias, or entity collision for authority prompts.");
-  }
   if (strategyPromptCount(strategy) !== strategy.targetPromptCount) {
-    blockers.push("Topic targets must add up to the total prompt target.");
+    blockers.push("Funnel-stage targets must add up to the prompts-per-persona target.");
+  }
+  if (strategy.pathwaysPerPersona < 1 || strategy.pathwaysPerPersona > 10) {
+    blockers.push("Choose between one and ten pathways per persona.");
+  }
+  if (strategy.funnelTargets.decision < strategy.pathwaysPerPersona) {
+    blockers.push("Create at least one bottom-of-funnel anchor for every pathway.");
+  }
+  if (strategy.funnelTargets.consideration < strategy.funnelTargets.decision) {
+    blockers.push("Middle-of-funnel prompts must equal or exceed bottom-of-funnel anchors.");
+  }
+  if (strategy.funnelTargets.awareness < strategy.funnelTargets.consideration) {
+    blockers.push("Top-of-funnel prompts must equal or exceed middle-of-funnel prompts.");
   }
   return { ready: blockers.length === 0, blockers };
-}
-
-function allocatePersonaSequence(strategy: PromptStrategy, personas: PromptPersona[]) {
-  const explicit = personas.map((persona) => ({
-    slug: persona.slug,
-    count: Math.max(0, Math.floor(strategy.personaPromptTargets[persona.slug] ?? 0)),
-  }));
-  const useExplicit = explicit.some((item) => item.count > 0);
-  const allocations = useExplicit
-    ? explicit
-    : personas.map((persona, index) => ({
-        slug: persona.slug,
-        count:
-          Math.floor(strategy.targetPromptCount / personas.length) +
-          (index < strategy.targetPromptCount % personas.length ? 1 : 0),
-      }));
-  const assigned = allocations.reduce((total, item) => total + item.count, 0);
-  if (assigned !== strategy.targetPromptCount) {
-    throw new Error(
-      `Persona prompt targets add up to ${assigned}, not ${strategy.targetPromptCount}.`,
-    );
-  }
-  const sequence: string[] = [];
-  let remaining = allocations.map((item) => ({ ...item }));
-  while (sequence.length < strategy.targetPromptCount) {
-    const next = remaining.find((item) => item.count > 0);
-    if (!next) break;
-    sequence.push(next.slug);
-    next.count--;
-    remaining = [...remaining.slice(1), remaining[0]!];
-  }
-  return sequence;
 }
 
 function promptTypeFor(
   strategy: PromptStrategy,
   topic: TopicClass,
   topicIndex: number,
+  funnelStage: FunnelStage,
 ): PromptType {
-  if (topic === "competitive_comparison") return "competitor_comparative";
-  if (topic === "unbranded_category_discovery" || topic === "buyer_education") {
-    return "unbranded";
+  if (funnelStage === "awareness") return "unbranded";
+  if (topic === "competitive_comparison" && strategy.competitors.length) {
+    return "competitor_comparative";
   }
-  if (topic === "product_line_use_cases") return "unbranded";
+  if (funnelStage === "consideration") return "unbranded";
   if (topic === "brand_entity_authority") {
     const canDisambiguate = Boolean(
       strategy.parentCompany || strategy.aliases.length || strategy.entityCollisions.length,
     );
     return canDisambiguate && topicIndex % 2 === 0 ? "entity_disambiguation" : "branded";
   }
-  return topicIndex % 2 === 0 ? "branded" : "unbranded";
-}
-
-function funnelFor(topic: TopicClass, topicIndex: number): FunnelStage {
-  if (topic === "buyer_education" || topic === "unbranded_category_discovery") {
-    return topicIndex % 3 === 0 ? "consideration" : "awareness";
-  }
-  if (topic === "competitive_comparison" || topic === "reputation_risk") {
-    return topicIndex % 3 === 0 ? "decision" : "consideration";
-  }
-  return topicIndex % 2 === 0 ? "consideration" : "decision";
+  return "branded";
 }
 
 function geoCategoryFor(topic: TopicClass, topicIndex: number): GeoCategory {
@@ -243,37 +203,85 @@ export function buildCoverageBlueprint(
   const readiness = strategyReadiness(strategy);
   if (!readiness.ready) throw new Error(readiness.blockers.join(" "));
   if (!personas.length) throw new Error("At least one active persona is required.");
-  const personaSequence = allocatePersonaSequence(strategy, personas);
   const cells: CoverageCell[] = [];
   let sequence = 0;
-  for (const topicClass of TOPIC_CLASSES) {
-    for (let topicIndex = 0; topicIndex < strategy.topicTargets[topicClass]; topicIndex++) {
-      const promptType = promptTypeFor(strategy, topicClass, topicIndex);
-      const usesQualifier = !["brand_entity_authority"].includes(topicClass);
-      cells.push({
-        key: `cell-${String(sequence + 1).padStart(3, "0")}`,
-        sequence,
-        personaSlug: personaSequence[sequence]!,
-        topicClass,
-        promptType,
-        questionArchetype:
-          ARCHETYPES_BY_TOPIC[topicClass][topicIndex % ARCHETYPES_BY_TOPIC[topicClass].length]!,
-        funnelStage: funnelFor(topicClass, topicIndex),
-        geoCategory: geoCategoryFor(topicClass, topicIndex),
-        businessLine: strategy.businessLines[sequence % strategy.businessLines.length]!,
-        signalTracked: SIGNAL_BY_TOPIC[topicClass],
-        buyerQualifier:
-          usesQualifier && strategy.buyerQualifiers.length
-            ? strategy.buyerQualifiers[sequence % strategy.buyerQualifiers.length]!
-            : "",
-        competitor:
-          promptType === "competitor_comparative"
-            ? strategy.competitors[topicIndex % strategy.competitors.length]!
-            : "",
-      });
-      sequence++;
-    }
+  for (const persona of personas) {
+    const personaCells: CoverageCell[] = [];
+    const addStage = (funnelStage: FunnelStage, count: number) => {
+      const stageTopics = topicsForStage(funnelStage, strategy.competitors.length > 0);
+      for (let stageIndex = 0; stageIndex < count; stageIndex++) {
+        const localSequence = personaCells.length;
+        const topicClass = stageTopics[stageIndex % stageTopics.length]!;
+        const promptType = promptTypeFor(strategy, topicClass, stageIndex, funnelStage);
+        const parent = parentForStage(personaCells, funnelStage, stageIndex);
+        const pathwayIndex =
+          parent?.pathwayKey != null
+            ? Number(parent.pathwayKey.split("-").at(-1)) - 1
+            : stageIndex % strategy.pathwaysPerPersona;
+        const businessLine = strategy.businessLines[pathwayIndex % strategy.businessLines.length]!;
+        const pathwayKey = `${persona.slug}-path-${String(pathwayIndex + 1).padStart(2, "0")}`;
+        const usesQualifier = topicClass !== "brand_entity_authority";
+        const cell: CoverageCell = {
+          key: `cell-${String(sequence + 1).padStart(3, "0")}`,
+          sequence,
+          personaSlug: persona.slug,
+          topicClass,
+          promptType,
+          questionArchetype: QUESTION_ARCHETYPES[localSequence % QUESTION_ARCHETYPES.length]!,
+          funnelStage,
+          pathwayKey,
+          pathwayLabel: `${businessLine} decision pathway`,
+          parentKey: parent?.key ?? null,
+          geoCategory: geoCategoryFor(topicClass, stageIndex),
+          businessLine,
+          signalTracked: SIGNAL_BY_TOPIC[topicClass],
+          buyerQualifier:
+            usesQualifier && strategy.buyerQualifiers.length
+              ? strategy.buyerQualifiers[stageIndex % strategy.buyerQualifiers.length]!
+              : "",
+          competitor:
+            promptType === "competitor_comparative"
+              ? strategy.competitors[stageIndex % strategy.competitors.length]!
+              : "",
+        };
+        cells.push(cell);
+        personaCells.push(cell);
+        sequence++;
+      }
+    };
+    addStage("decision", strategy.funnelTargets.decision);
+    addStage("consideration", strategy.funnelTargets.consideration);
+    addStage("awareness", strategy.funnelTargets.awareness);
   }
   return cells;
+}
+
+function parentForStage(cells: CoverageCell[], stage: FunnelStage, index: number) {
+  if (stage === "decision") return null;
+  const parentStage: FunnelStage = stage === "consideration" ? "decision" : "consideration";
+  const parents = cells.filter((cell) => cell.funnelStage === parentStage);
+  return parents[index % parents.length] ?? null;
+}
+
+function topicsForStage(stage: FunnelStage, hasCompetitors: boolean): TopicClass[] {
+  if (stage === "decision") {
+    return [
+      "brand_entity_authority",
+      hasCompetitors ? "competitive_comparison" : "product_line_use_cases",
+      "reputation_risk",
+      "product_line_use_cases",
+      hasCompetitors ? "competitive_comparison" : "brand_entity_authority",
+    ];
+  }
+  if (stage === "consideration") {
+    return [
+      "buyer_education",
+      hasCompetitors ? "competitive_comparison" : "unbranded_category_discovery",
+      "reputation_risk",
+      "product_line_use_cases",
+      "unbranded_category_discovery",
+    ];
+  }
+  return ["buyer_education", "unbranded_category_discovery", "product_line_use_cases"];
 }
 import type { GeoCategory } from "./studio";

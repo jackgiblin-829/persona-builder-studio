@@ -1,14 +1,14 @@
 # Persona Builder Studio
 
-Persona Builder Studio turns first-party research and SparkToro audience data into editable personas and evidence-led GEO prompt sets.
+Persona Builder Studio turns first-party research and SparkToro audience data into editable personas and evidence-led Query Funnel prompt baselines for downstream SEO and GEO strategy.
 
 The product is organized around one simple project workflow:
 
 1. **Data** — upload PDF, DOCX, TXT, Markdown, CSV, or JSON files, or paste transcripts. Sources are parsed, redacted, and converted into research signals automatically.
 2. **Personas** — generate an adaptive set of 3–5 descriptive personas from completed sources and a full SparkToro audience report, then edit them as immutable versions.
-3. **Prompts** — research and approve a cited market brief, generate and score two candidates for each of 50 coverage cells, repair and review the selected prompts, and export the fully approved live library as one Profound-compatible CSV.
+3. **Query Funnels** — approve a cited grounding brief, generate five BOFU anchors, fifteen MOFU evaluation questions, and thirty TOFU awareness questions per persona, review the linked pathways, and export a versioned baseline CSV.
 
-Audit decks, Profound synchronization, performance reporting, and legacy brand/content workflows are intentionally outside this release.
+Prompt execution, rank tracking, AI visibility reporting, audit decks, and performance reporting are intentionally outside this release. The exported baseline is designed to feed the team’s chosen SEO/GEO tracking workflow.
 
 ## Local setup
 
@@ -40,7 +40,7 @@ Open <http://localhost:3100> and sign in with one of the seeded accounts:
 | `analyst@example.com` | `demo-password-2` | editor |
 | `viewer@example.com` | `demo-password-3` | viewer |
 
-The seed contains one fictional project, completed research signals, an approved synthetic market brief, three personas, and a demo prompt library. Everything is synthetic and uses reserved `.example` domains. Demo-mode output is visibly labeled and cannot be mistaken for a production Profound export.
+The seed contains one fictional project, completed research signals, an approved synthetic grounding brief, three personas, and three demo Query Funnel baselines. Everything is synthetic and uses reserved `.example` domains. Demo-mode output is visibly labeled and cannot be mistaken for production research.
 
 ## Important database reset
 
@@ -53,6 +53,7 @@ The project-first schema is a new initial schema, not a compatibility migration.
 | `npm run dev` | Start the app on port 3100 |
 | `npm run worker` | Process ingestion and generation jobs |
 | `npm run db:migrate` | Apply the clean initial migration |
+| `npm run db:migrate:safe` | Apply forward migrations and refuse any legacy reset |
 | `npm run db:seed` | Seed the three-tab demo |
 | `npm run db:reset` | Destructively recreate the development schema |
 | `npm run test:unit` | Run fast contract and parser tests |

@@ -80,15 +80,68 @@ export default async function ProjectDataPage({
       ) : null}
 
       <MetricStrip
-        className="mb-4"
+        className="mb-4 lg:grid-cols-6"
         metrics={[
           { label: "Sources", value: summary.sources.length },
           { label: "Ready", value: summary.completedSourceCount, tone: "success" },
           { label: "Source revision", value: summary.project.sourceRevision },
           { label: "Active persona revision", value: summary.project.activePersonaRevision },
           { label: "Market", value: summary.project.primaryMarket },
+          {
+            label: "Evidence readiness",
+            value: `${summary.brandReadiness.score}%`,
+            tone: summary.brandReadiness.score === 100 ? "success" : "warn",
+          },
         ]}
       />
+
+      <Card className="mb-5">
+        <CardHeader
+          title="Brand intelligence readiness"
+          description="Coverage matters more than file volume. Fill these evidence areas before treating the generated prompts as a strategic baseline."
+          actions={
+            <Badge tone={summary.brandReadiness.score === 100 ? "success" : "warn"}>
+              {summary.brandReadiness.readyAreaCount}/{summary.brandReadiness.totalAreaCount} areas
+              covered
+            </Badge>
+          }
+        />
+        <div className="p-4">
+          <div className="h-2 overflow-hidden rounded-full bg-surface-sunken">
+            <div
+              className="h-full bg-accent"
+              style={{ width: `${summary.brandReadiness.score}%` }}
+            />
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {summary.brandReadiness.areas.map((area) => (
+              <div
+                key={area.label}
+                className="flex items-center justify-between gap-3 rounded-lg border border-surface-border px-3 py-2"
+              >
+                <span className="text-sm text-ink">{area.label}</span>
+                <Badge tone={area.ready ? "success" : "warn"}>
+                  {area.ready
+                    ? "covered"
+                    : area.label === "External audience behavior"
+                      ? "enrich with SparkToro"
+                      : "add evidence"}
+                </Badge>
+              </div>
+            ))}
+          </div>
+          {summary.brandReadiness.missing.length ? (
+            <p className="mt-3 text-xs text-ink-muted">
+              Recommended next inputs: {summary.brandReadiness.missing.join(", ")}.
+            </p>
+          ) : (
+            <p className="mt-3 text-xs text-success">
+              All core evidence areas are represented. You can still add more sources to improve
+              depth and confidence.
+            </p>
+          )}
+        </div>
+      </Card>
 
       <div className="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
         <Card>

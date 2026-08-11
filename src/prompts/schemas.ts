@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SCHEMA_VERSION = "4.0.0";
+export const SCHEMA_VERSION = "5.0.0";
 
 const promptStrategySchema = z.object({
   canonicalBrand: z.string().min(2).max(160),
@@ -12,16 +12,13 @@ const promptStrategySchema = z.object({
   competitors: z.array(z.string().min(1).max(200)).max(40),
   buyerQualifiers: z.array(z.string().min(1).max(200)).max(40),
   freshnessFacts: z.array(z.string().min(1).max(200)).max(40),
+  pathwaysPerPersona: z.number().int().min(1).max(10),
   targetPromptCount: z.number().int().min(12).max(100),
-  topicTargets: z.object({
-    brand_entity_authority: z.number().int().min(0).max(100),
-    unbranded_category_discovery: z.number().int().min(0).max(100),
-    competitive_comparison: z.number().int().min(0).max(100),
-    buyer_education: z.number().int().min(0).max(100),
-    reputation_risk: z.number().int().min(0).max(100),
-    product_line_use_cases: z.number().int().min(0).max(100),
+  funnelTargets: z.object({
+    awareness: z.number().int().min(0).max(100),
+    consideration: z.number().int().min(0).max(100),
+    decision: z.number().int().min(0).max(100),
   }),
-  personaPromptTargets: z.record(z.string(), z.number().int().min(0).max(100)),
 });
 
 export const marketResearchBriefSchema = z.object({

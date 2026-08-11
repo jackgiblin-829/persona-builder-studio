@@ -17,7 +17,7 @@ import { materializeSparkSignals } from "@/jobs/handlers/generate-personas";
 import type { ProjectContext } from "@/lib/auth/context";
 import { runSeed } from "@/seed/run";
 import { getProject, listProjectsForSession } from "@/services/projects";
-import { buildProfoundCsv } from "@/services/prompts";
+import { buildPromptBaselineCsv } from "@/services/prompts";
 import { createSourceFromTranscript } from "@/services/sources";
 import { savePersonaVersion, startPersonaGeneration } from "@/services/studio";
 
@@ -94,12 +94,14 @@ describe("clean project schema and tenant boundaries", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
 
-    await expect(buildProfoundCsv(viewer)).rejects.toThrow(/demo-mode/i);
-    const csv = await buildProfoundCsv(viewer, { allowMock: true });
-    expect(csv.startsWith('\uFEFF"Topic","Prompt","Tags","Regions","Language"')).toBe(true);
-    expect(csv.trim().split("\r\n")).toHaveLength(73);
+    await expect(buildPromptBaselineCsv(viewer)).rejects.toThrow(/demo-mode/i);
+    const csv = await buildPromptBaselineCsv(viewer, { allowMock: true });
+    expect(csv.startsWith('\uFEFF"Baseline ID","Baseline Version","Persona","Pathway"')).toBe(true);
+    expect(csv.trim().split("\r\n")).toHaveLength(151);
     expect(csv).toContain('"US","en-US"');
-    expect(csv).toContain("generation_mode:mock");
+    expect(csv).toContain('"mock"');
+    expect(csv).toContain('"BOFU"');
+    expect(csv).toContain('"Parent Prompt ID"');
   });
 });
 

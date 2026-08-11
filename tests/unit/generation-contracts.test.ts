@@ -47,16 +47,13 @@ const strategy: PromptStrategy = {
   competitors: ["Contoso Flow", "Fabrikam Work", "Adventure Works Cloud"],
   buyerQualifiers: ["a regulated enterprise", "a 500-person operations team"],
   freshnessFacts: ["current product name"],
+  pathwaysPerPersona: 3,
   targetPromptCount: 50,
-  topicTargets: {
-    brand_entity_authority: 6,
-    unbranded_category_discovery: 10,
-    competitive_comparison: 9,
-    buyer_education: 10,
-    reputation_risk: 7,
-    product_line_use_cases: 8,
+  funnelTargets: {
+    awareness: 30,
+    consideration: 15,
+    decision: 5,
   },
-  personaPromptTargets: {},
 };
 const promptPersonas = [
   { slug: "founder-ceo", name: "Founder and CEO" },
@@ -65,7 +62,7 @@ const promptPersonas = [
 ];
 
 async function candidatesFor(inputStrategy: PromptStrategy) {
-  const blueprint = buildCoverageBlueprint(inputStrategy, promptPersonas);
+  const blueprint = buildCoverageBlueprint(inputStrategy, promptPersonas.slice(0, 1));
   const result = await adapter.generateStructured({
     templateId: PROMPT_GENERATION.id,
     templateVersion: PROMPT_GENERATION.version,
@@ -151,6 +148,16 @@ describe("persona, research, and prompt quality contracts", () => {
 
   it("produces two grounded candidates per cell with balanced archetypes", async () => {
     const { blueprint, result } = await candidatesFor(strategy);
+    const projectBlueprint = buildCoverageBlueprint(strategy, promptPersonas);
+    expect(projectBlueprint).toHaveLength(150);
+    for (const persona of promptPersonas) {
+      expect(projectBlueprint.filter((cell) => cell.personaSlug === persona.slug)).toHaveLength(50);
+    }
+    expect(projectBlueprint.filter((cell) => cell.funnelStage === "decision")).toHaveLength(15);
+    expect(projectBlueprint.filter((cell) => cell.funnelStage === "consideration")).toHaveLength(
+      45,
+    );
+    expect(projectBlueprint.filter((cell) => cell.funnelStage === "awareness")).toHaveLength(90);
     expect(result.data.candidates).toHaveLength(100);
     expect(new Set(blueprint.map((cell) => cell.topicClass))).toEqual(new Set(TOPIC_CLASSES));
     expect(new Set(result.data.candidates.map((candidate) => candidate.candidate_key)).size).toBe(

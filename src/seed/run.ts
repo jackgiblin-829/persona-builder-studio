@@ -91,16 +91,13 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
         "an organization replacing manual workflows",
       ],
       freshnessFacts: ["current product name", "current security certifications"],
+      pathwaysPerPersona: 3,
       targetPromptCount: 50,
-      topicTargets: {
-        brand_entity_authority: 6,
-        unbranded_category_discovery: 10,
-        competitive_comparison: 9,
-        buyer_education: 10,
-        reputation_risk: 7,
-        product_line_use_cases: 8,
+      funnelTargets: {
+        awareness: 30,
+        consideration: 15,
+        decision: 5,
       },
-      personaPromptTargets: {},
     },
     promptStrategyEdited: false,
     audienceDescriptionEdited: true,
@@ -218,16 +215,13 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
           "an organization replacing manual workflows",
         ],
         freshnessFacts: ["current product name", "current security certifications"],
+        pathwaysPerPersona: 3,
         targetPromptCount: 50,
-        topicTargets: {
-          brand_entity_authority: 6,
-          unbranded_category_discovery: 10,
-          competitive_comparison: 9,
-          buyer_education: 10,
-          reputation_risk: 7,
-          product_line_use_cases: 8,
+        funnelTargets: {
+          awareness: 30,
+          consideration: 15,
+          decision: 5,
         },
-        personaPromptTargets: {},
       },
       facts: [
         "canonical brand",
@@ -323,24 +317,53 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
       promptSetId: setId,
       personaVersionId: versionId,
       version: 1,
-      clusterCount: 6,
-      promptCount: 24,
+      clusterCount: 3,
+      promptCount: 50,
       modelProvider: "mock",
       modelId: "mock:gpt-4.1",
       dataOrigin: "mock",
       researchBriefId,
     });
     const titles = [
-      "Problem and Stakes",
-      "Category Foundations",
-      "Recommended Approaches",
-      "Comparisons and Tradeoffs",
-      "Proof and Risk",
-      "Selection and Success",
+      "Workflow automation decision pathway",
+      "Security governance workflows decision pathway",
+      "Operational reporting decision pathway",
     ];
+    const plans: Array<{
+      key: string;
+      parentKey: string | null;
+      stage: "decision" | "consideration" | "awareness";
+      stageIndex: number;
+      pathwayIndex: number;
+    }> = [];
+    const addPlans = (
+      stage: "decision" | "consideration" | "awareness",
+      count: number,
+      parents: typeof plans,
+    ) => {
+      const added: typeof plans = [];
+      for (let index = 0; index < count; index++) {
+        const parent = parents.length ? parents[index % parents.length]! : null;
+        const pathwayIndex = parent?.pathwayIndex ?? index % titles.length;
+        const plan = {
+          key: `cell-${String(promptCount + plans.length + 1).padStart(3, "0")}`,
+          parentKey: parent?.key ?? null,
+          stage,
+          stageIndex: index,
+          pathwayIndex,
+        };
+        plans.push(plan);
+        added.push(plan);
+      }
+      return added;
+    };
+    const decisions = addPlans("decision", 5, []);
+    const considerations = addPlans("consideration", 15, decisions);
+    addPlans("awareness", 30, considerations);
     for (let clusterIndex = 0; clusterIndex < titles.length; clusterIndex++) {
       const title = titles[clusterIndex]!;
       const clusterId = newId(ID_PREFIXES.promptCluster);
+      const clusterPlans = plans.filter((plan) => plan.pathwayIndex === clusterIndex);
       await db.insert(promptClusters).values({
         id: clusterId,
         organizationId: ORG_ID,
@@ -350,13 +373,57 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
         sequence: clusterIndex,
         title,
         slug: slugify(title),
-        seedTopic: title,
-        informationNeed: `${name} needs evidence-led guidance about ${title.toLowerCase()}.`,
-        rationale: "This cluster fans out a distinct persona information need.",
+        seedTopic: [
+          "workflow automation",
+          "security governance workflows",
+          "operational reporting",
+        ][clusterIndex]!,
+        informationNeed: `${name} moves from bottom-of-funnel selection through evaluation and awareness for ${title.replace(" decision pathway", "")}.`,
+        rationale:
+          "This Query Funnel pathway starts with a conversion-adjacent anchor and projects upward.",
         signalIds: signalIds.slice(0, 4),
       });
-      for (let promptIndex = 0; promptIndex < 4; promptIndex++) {
-        const promptText = `How should a ${name.toLowerCase()} evaluate ${title.toLowerCase()} when evidence, fit, risk, and implementation effort matter? Perspective ${promptIndex + 1}.`;
+      for (let promptIndex = 0; promptIndex < clusterPlans.length; promptIndex++) {
+        const plan = clusterPlans[promptIndex]!;
+        const businessLine = title.replace(" decision pathway", "");
+        const angle = [
+          "security requirements",
+          "implementation effort",
+          "proof of outcomes",
+          "stakeholder adoption",
+          "total operating cost",
+          "governance",
+          "integration fit",
+          "vendor risk",
+          "change management",
+          "reporting needs",
+          "time to value",
+          "customer support",
+          "scalability",
+          "data quality",
+          "procurement concerns",
+          "team capacity",
+          "long-term flexibility",
+          "budget ownership",
+          "regulatory exposure",
+          "training needs",
+          "workflow complexity",
+          "executive sponsorship",
+          "cross-functional alignment",
+          "data migration",
+          "audit readiness",
+          "service reliability",
+          "contract flexibility",
+          "deployment speed",
+          "measurement criteria",
+          "future requirements",
+        ][plan.stageIndex % 30]!;
+        const promptText =
+          plan.stage === "decision"
+            ? `Is Northwind Enterprise Platform a strong choice for ${businessLine} when ${angle} is important to ${name.toLowerCase()} stakeholders?`
+            : plan.stage === "consideration"
+              ? `What proof and tradeoffs should ${name.toLowerCase()} stakeholders evaluate about ${angle} when comparing ${businessLine} options?`
+              : `How can ${name.toLowerCase()} teams improve ${businessLine} when ${angle} creates friction?`;
         await db.insert(generatedPrompts).values({
           id: newId(ID_PREFIXES.prompt),
           organizationId: ORG_ID,
@@ -365,22 +432,62 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
           clusterId,
           personaVersionId: versionId,
           sequence: promptIndex,
+          coverageKey: plan.key,
+          parentCoverageKey: plan.parentKey,
           promptText,
           normalizedHash: sha256(promptText.toLowerCase()),
-          geoCategory: GEO_CATEGORIES[(clusterIndex * 4 + promptIndex) % GEO_CATEGORIES.length]!,
-          intent: title.toLowerCase(),
-          journeyStage:
-            clusterIndex < 2
-              ? "education"
-              : clusterIndex < 5
-                ? "evaluation"
-                : "selection_and_implementation",
+          geoCategory: GEO_CATEGORIES[(promptCount + promptIndex) % GEO_CATEGORIES.length]!,
+          topicClass:
+            plan.stage === "decision"
+              ? "brand_entity_authority"
+              : plan.stage === "consideration"
+                ? "competitive_comparison"
+                : "buyer_education",
+          promptType: plan.stage === "decision" ? "branded" : "unbranded",
+          questionArchetype:
+            plan.stage === "decision"
+              ? "recommendation"
+              : plan.stage === "consideration"
+                ? "comparison"
+                : "how_to",
+          intent:
+            plan.stage === "decision"
+              ? "Validate a purchase decision"
+              : plan.stage === "consideration"
+                ? "Evaluate approaches and tradeoffs"
+                : "Understand the problem and possible approaches",
+          journeyStage: plan.stage,
+          businessLine,
+          signalTracked:
+            plan.stage === "decision"
+              ? "brand selection"
+              : plan.stage === "consideration"
+                ? "solution evaluation"
+                : "problem discovery",
+          buyerQualifier: name,
+          namedEntities: plan.stage === "decision" ? ["Northwind Enterprise Platform"] : [],
+          qualityScore: 92,
+          rubricScores: {
+            categorySpecificity: 18,
+            personaQualifierFit: 14,
+            naturalBuyerLanguage: 14,
+            measurementValue: 13,
+            researchSupport: 14,
+            distinctiveness: 9,
+            metadataCompleteness: 10,
+            total: 92,
+          },
+          evaluatorExplanation:
+            "Deterministic demo prompt grounded in the seeded persona and research signals.",
+          researchFactIds: ["fact-001", "fact-004", "fact-008"],
+          maximumSimilarity: 0.42,
+          reviewStatus: "ready",
           expectedAnswerElements: ["Direct guidance", "Tradeoffs", "Evidence", "Next steps"],
           signalIds: signalIds.slice(0, 3),
         });
-        promptCount++;
       }
     }
+    promptCount += plans.length;
   }
   return {
     organizations: 1,
