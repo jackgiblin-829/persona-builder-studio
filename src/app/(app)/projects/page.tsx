@@ -1,6 +1,8 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { deleteProjectAction } from "@/app/actions/projects";
+import { ActionForm, SubmitIconButton } from "@/components/forms/action-form";
 import { AppShell, globalNav } from "@/components/app-shell";
 import {
   Badge,
@@ -11,7 +13,7 @@ import {
   PageHeader,
   StatusBadge,
 } from "@/components/ui";
-import { getSession } from "@/lib/auth/session";
+import { getCsrfToken, getSession } from "@/lib/auth/session";
 import { listProjectsForSession } from "@/services/projects";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +24,10 @@ export default async function ProjectsPage() {
   const first = session.memberships[0];
   if (!first) redirect("/no-organization");
   const pathname = (await headers()).get("x-pathname") ?? "/projects";
-  const items = await listProjectsForSession(session.memberships);
+  const [items, csrfToken] = await Promise.all([
+    listProjectsForSession(session.memberships),
+    getCsrfToken(),
+  ]);
   return (
     <AppShell
       session={session}
@@ -32,7 +37,7 @@ export default async function ProjectsPage() {
     >
       <PageHeader
         title="Projects"
-        description="Each project turns first-party research and SparkToro audience data into editable personas and export-ready GEO prompts."
+        description="Each project turns first-party research and SparkToro audience data into editable personas and an export-ready SEO/GEO prompt baseline."
         actions={
           <ButtonLink href="/projects/new" variant="primary">
             New project
@@ -54,10 +59,25 @@ export default async function ProjectsPage() {
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
           {items.map((project) => (
-            <Card key={project.id} className="overflow-hidden">
+            <Card key={project.id} className="relative overflow-hidden">
+              {project.canDelete ? (
+                <ActionForm
+                  action={deleteProjectAction}
+                  csrfToken={csrfToken}
+                  hidden={{ projectId: project.id }}
+                  className="absolute right-3 top-3 z-10 space-y-0"
+                >
+                  <SubmitIconButton
+                    icon="close"
+                    label={`Delete ${project.name}`}
+                    pendingLabel="Deleting project"
+                    confirm={`Are you sure you want to delete “${project.name}”? This permanently removes its research, personas, and prompts.`}
+                  />
+                </ActionForm>
+              ) : null}
               <Link
                 href={`/projects/${project.id}/data`}
-                className="block p-5 hover:bg-surface-sunken"
+                className="block p-5 pr-16 hover:bg-surface-sunken"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -76,7 +96,7 @@ export default async function ProjectsPage() {
                     metrics={[
                       { label: "Sources", value: project.sourceCount },
                       { label: "Personas", value: project.personaCount },
-                      { label: "Prompts", value: project.promptCount },
+                      { label: "Baseline prompts", value: project.promptCount },
                       { label: "Market", value: project.primaryMarket },
                     ]}
                     className="lg:grid-cols-4"

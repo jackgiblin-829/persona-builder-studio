@@ -81,7 +81,10 @@ export function quoteCsv(value: string) {
   return `"${protectSpreadsheetFormula(value).replaceAll('"', '""')}"`;
 }
 
-export async function buildProfoundCsv(ctx: ProjectContext, options: { allowMock?: boolean } = {}) {
+export async function buildPromptBaselineCsv(
+  ctx: ProjectContext,
+  options: { allowMock?: boolean } = {},
+) {
   requireCapability(ctx, "export:read");
   const [project] = await db
     .select()
@@ -93,56 +96,85 @@ export async function buildProfoundCsv(ctx: ProjectContext, options: { allowMock
   const containsMock = sets.some((set) => set.version.dataOrigin === "mock");
   if (containsMock && !options.allowMock) {
     throw new ValidationError(
-      "Production Profound export is unavailable because the active library contains demo-mode prompts.",
+      "Production baseline export is unavailable because the active baseline contains demo-mode prompts.",
     );
   }
-  const activePrompts = sets.flatMap((set) => set.clusters.flatMap((cluster) => cluster.prompts));
   if (!containsMock) {
-    if (activePrompts.length !== 50) {
-      throw new ValidationError(
-        `Production export requires exactly 50 prompts; the active library has ${activePrompts.length}.`,
+    for (const set of sets) {
+      const prompts = set.clusters.flatMap((cluster) => cluster.prompts);
+      const expected = set.version.strategySnapshot.targetPromptCount;
+      if (prompts.length !== expected) {
+        throw new ValidationError(
+          `${set.persona.name} requires ${expected} prompts; its active baseline has ${prompts.length}.`,
+        );
+      }
+      const blocked = prompts.filter(
+        (prompt) => prompt.qualityScore < 80 || prompt.reviewStatus !== "approved",
       );
-    }
-    const blocked = activePrompts.filter(
-      (prompt) => prompt.qualityScore < 80 || prompt.reviewStatus !== "approved",
-    );
-    if (blocked.length) {
-      throw new ValidationError(
-        `${blocked.length} prompts still need a passing score and human approval before export.`,
-      );
-    }
-    if (new Set(activePrompts.map((prompt) => prompt.coverageKey)).size !== 50) {
-      throw new ValidationError("Production export is missing one or more coverage cells.");
+      if (blocked.length) {
+        throw new ValidationError(
+          `${blocked.length} prompts for ${set.persona.name} still need a passing score and human approval.`,
+        );
+      }
+      if (new Set(prompts.map((prompt) => prompt.coverageKey)).size !== expected) {
+        throw new ValidationError(`${set.persona.name} is missing one or more Query Funnel cells.`);
+      }
     }
   }
-  const rows = [["Topic", "Prompt", "Tags", "Regions", "Language"]];
+  const rows = [
+    [
+      "Baseline ID",
+      "Baseline Version",
+      "Persona",
+      "Pathway",
+      "Prompt ID",
+      "Parent Prompt ID",
+      "Funnel Stage",
+      "Intent",
+      "Prompt",
+      "Brand Mode",
+      "Topic Class",
+      "Question Archetype",
+      "Business Line",
+      "Buyer Context",
+      "Quality Score",
+      "Review Status",
+      "Market",
+      "Language",
+      "Evidence References",
+      "Research Snapshot",
+      "Generated At",
+      "Generation Mode",
+    ],
+  ];
   for (const set of sets) {
     for (const { cluster, prompts } of set.clusters) {
       for (const prompt of prompts) {
         if (prompt.reviewStatus === "excluded") continue;
         if (!containsMock && prompt.reviewStatus !== "approved") continue;
         rows.push([
+          set.version.id,
+          String(set.version.version),
+          set.persona.name,
           cluster.title,
+          prompt.coverageKey,
+          prompt.parentCoverageKey ?? "",
+          funnelStageLabel(prompt.journeyStage),
+          prompt.intent,
           prompt.promptText,
-          [
-            `persona:${set.persona.slug}`,
-            `geo:${prompt.geoCategory}`,
-            `cluster:${cluster.slug}`,
-            `topic_class:${prompt.topicClass}`,
-            `prompt_type:${prompt.promptType}`,
-            `archetype:${prompt.questionArchetype}`,
-            `funnel:${prompt.journeyStage}`,
-            `business_line:${slugTag(prompt.businessLine)}`,
-            `signal:${slugTag(prompt.signalTracked)}`,
-            `review_status:${prompt.reviewStatus}`,
-            `quality_band:${qualityBand(prompt.qualityScore)}`,
-            ...(set.version.researchBriefId
-              ? [`research_snapshot:${slugTag(set.version.researchBriefId)}`]
-              : []),
-            ...(containsMock ? ["generation_mode:mock"] : []),
-          ].join(","),
+          prompt.promptType,
+          prompt.topicClass,
+          prompt.questionArchetype,
+          prompt.businessLine,
+          prompt.buyerQualifier,
+          String(Math.round(prompt.qualityScore)),
+          prompt.reviewStatus,
           project.primaryMarket,
           project.languageLocale,
+          [...prompt.signalIds, ...prompt.researchFactIds].join(" | "),
+          set.version.researchBriefId ?? "",
+          set.version.createdAt.toISOString(),
+          set.version.dataOrigin,
         ]);
       }
     }
@@ -152,12 +184,16 @@ export async function buildProfoundCsv(ctx: ProjectContext, options: { allowMock
     organizationId: ctx.organizationId,
     projectId: ctx.projectId,
     actorUserId: ctx.userId,
-    action: "prompt.export",
+    action: "prompt.baseline_export",
     entityType: "project",
     entityId: ctx.projectId,
     metadata: { rows: rows.length - 1, demo: containsMock },
   });
   return `\uFEFF${rows.map((row) => row.map(quoteCsv).join(",")).join("\r\n")}\r\n`;
+}
+
+function funnelStageLabel(value: string) {
+  return value === "decision" ? "BOFU" : value === "consideration" ? "MOFU" : "TOFU";
 }
 
 export async function setPromptReviewStatus(
@@ -266,11 +302,13 @@ export async function regenerateSinglePrompt(ctx: ProjectContext, promptId: stri
       version: promptSetVersions,
       personaVersion: personaVersions,
       persona: personas,
+      cluster: promptClusters,
     })
     .from(generatedPrompts)
     .innerJoin(promptSetVersions, eq(promptSetVersions.id, generatedPrompts.promptSetVersionId))
     .innerJoin(personaVersions, eq(personaVersions.id, generatedPrompts.personaVersionId))
     .innerJoin(personas, eq(personas.id, personaVersions.personaId))
+    .innerJoin(promptClusters, eq(promptClusters.id, generatedPrompts.clusterId))
     .where(
       and(
         eq(generatedPrompts.id, promptId),
@@ -282,7 +320,7 @@ export async function regenerateSinglePrompt(ctx: ProjectContext, promptId: stri
   if (!row) throw new ValidationError("Prompt was not found.");
   if (!row.version.researchBriefId) {
     throw new ValidationError(
-      "This legacy prompt has no research snapshot. Refresh the full library.",
+      "This legacy prompt has no research snapshot. Refresh the full baseline.",
     );
   }
   const [brief, project, signals] = await Promise.all([
@@ -312,6 +350,9 @@ export async function regenerateSinglePrompt(ctx: ProjectContext, promptId: stri
     promptType: row.prompt.promptType as PromptType,
     questionArchetype: row.prompt.questionArchetype as QuestionArchetype,
     funnelStage: row.prompt.journeyStage as FunnelStage,
+    pathwayKey: row.cluster.slug,
+    pathwayLabel: row.cluster.title,
+    parentKey: row.prompt.parentCoverageKey,
     geoCategory: row.prompt.geoCategory as GeoCategory,
     businessLine: row.prompt.businessLine,
     signalTracked: row.prompt.signalTracked,
@@ -429,12 +470,6 @@ export async function approveCurrentPromptLibrary(ctx: ProjectContext) {
   });
 }
 
-function qualityBand(score: number) {
-  if (score >= 90) return "excellent";
-  if (score >= 80) return "passing";
-  return "needs-revision";
-}
-
 function emptyRubric() {
   return {
     categorySpecificity: 0,
@@ -446,13 +481,4 @@ function emptyRubric() {
     metadataCompleteness: 0,
     total: 0,
   };
-}
-
-function slugTag(value: string) {
-  return value
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 80);
 }

@@ -28,8 +28,8 @@ import {
 } from "@/components/ui";
 import {
   buildCoverageBlueprint,
+  FUNNEL_STAGE_LABELS,
   strategyReadiness,
-  TOPIC_CLASS_LABELS,
 } from "@/contracts/prompt-strategy";
 import { researchBriefIsStale } from "@/contracts/market-research";
 import { hasCapability, requireProjectAccess } from "@/lib/auth/context";
@@ -93,7 +93,7 @@ export default async function PromptsPage({
   const semanticRiskCount = promptRows.filter((prompt) => prompt.maximumSimilarity >= 0.86).length;
   const filters = {
     persona: queryValue(query.persona),
-    topicClass: queryValue(query.topic_class),
+    funnelStage: queryValue(query.funnel_stage),
     promptType: queryValue(query.prompt_type),
     businessLine: queryValue(query.business_line),
     reviewStatus: queryValue(query.review_status),
@@ -107,7 +107,7 @@ export default async function PromptsPage({
           ...group,
           prompts: group.prompts.filter(
             (prompt) =>
-              (!filters.topicClass || prompt.topicClass === filters.topicClass) &&
+              (!filters.funnelStage || prompt.journeyStage === filters.funnelStage) &&
               (!filters.promptType || prompt.promptType === filters.promptType) &&
               (!filters.businessLine || prompt.businessLine === filters.businessLine) &&
               (!filters.reviewStatus || prompt.reviewStatus === filters.reviewStatus),
@@ -125,6 +125,7 @@ export default async function PromptsPage({
   const containsMock = sets.some((set) => set.version.dataOrigin === "mock");
   const openAiMode = integrations.find((item) => item.vendor === "openai")?.mode ?? "mock";
   const strategy = summary.project.promptStrategy;
+  const expectedPromptCount = activePersonas.length * strategy.targetPromptCount;
   const approvedBrief = summary.approvedResearchBrief;
   const draftBrief = summary.draftResearchBrief;
   const researchIsStale = approvedBrief ? researchBriefIsStale(approvedBrief.staleAt) : false;
@@ -143,19 +144,21 @@ export default async function PromptsPage({
   return (
     <>
       <PageHeader
-        title="Prompts"
-        description="Build one category-grounded, project-wide prompt library from an approved market strategy and active personas."
-        breadcrumb={`${summary.project.name} / Prompts`}
+        title="Query Funnel baseline"
+        description="Turn each evidence-backed persona into connected BOFU, MOFU, and TOFU prompts for downstream SEO and GEO strategy."
+        breadcrumb={`${summary.project.name} / Query Funnels`}
         actions={
           <div className="flex gap-2">
             {sets.length &&
             (containsMock ||
-              (approvedCount === 50 && totalPrompts === 50 && needsRevisionCount === 0)) ? (
+              (approvedCount === expectedPromptCount &&
+                totalPrompts === expectedPromptCount &&
+                needsRevisionCount === 0)) ? (
               <ButtonLink
                 href={`/projects/${projectId}/prompts/export.csv${containsMock ? "?demo=1" : ""}`}
                 variant="secondary"
               >
-                {containsMock ? "Download demo CSV" : "Export Profound CSV"}
+                {containsMock ? "Download demo baseline" : "Export baseline CSV"}
               </ButtonLink>
             ) : null}
             {canGenerate ? (
@@ -169,11 +172,11 @@ export default async function PromptsPage({
                   label={
                     openAiMode === "mock"
                       ? sets.length
-                        ? "Refresh demo prompts"
-                        : "Generate demo prompts"
+                        ? "Refresh demo baseline"
+                        : "Generate demo baseline"
                       : sets.length
-                        ? "Refresh prompts"
-                        : "Generate prompts"
+                        ? "Refresh baseline"
+                        : "Generate baseline"
                   }
                   pendingLabel="Starting…"
                   disabled={
@@ -191,16 +194,15 @@ export default async function PromptsPage({
       />
       {openAiMode === "mock" ? (
         <div className="mb-4">
-          <Callout tone="warn" title="OpenAI is in demo mode">
+          <Callout tone="warn" title="Generation is in demo mode">
             Generation will use deterministic sample phrasing rather than a live model. Demo
-            libraries can be downloaded for product testing, but never as production Profound
-            exports.
+            baselines can be downloaded for product testing, but are clearly labeled as mock data.
           </Callout>
         </div>
       ) : null}
       {latest && (latest.status === "running" || latest.status === "queued") ? (
         <div className="mb-4">
-          <Callout tone="info" title="Generating prompt sets">
+          <Callout tone="info" title="Generating Query Funnels">
             {latest.stage.replaceAll("_", " ")} · {latest.progress}%. Current completed sets remain
             exportable during generation.
           </Callout>
@@ -225,8 +227,8 @@ export default async function PromptsPage({
         className="mb-5"
         metrics={[
           { label: "Personas", value: activePersonas.length },
-          { label: "Completed sets", value: sets.length },
-          { label: "Topic clusters", value: totalClusters },
+          { label: "Persona baselines", value: sets.length },
+          { label: "Query pathways", value: totalClusters },
           { label: "Prompts", value: totalPrompts },
           { label: "Approved", value: approvedCount },
           {
@@ -243,8 +245,8 @@ export default async function PromptsPage({
       />
       <Card className="mb-5">
         <CardHeader
-          title="Market research brief"
-          description="Current web and uploaded-source research is frozen before prompt generation. Refresh manually; briefs warn after 30 days."
+          title="Prompt grounding brief"
+          description="Freeze the brand, category, competitor, and customer context used to generate the baseline. Refresh manually when the evidence changes."
           actions={
             <div className="flex flex-wrap items-center gap-2">
               <Badge
@@ -274,7 +276,7 @@ export default async function PromptsPage({
                   className="space-y-0"
                 >
                   <SubmitButton
-                    label={approvedBrief ? "Refresh research" : "Research market"}
+                    label={approvedBrief ? "Refresh grounding" : "Build grounding brief"}
                     pendingLabel="Starting…"
                     size="sm"
                     variant="secondary"
@@ -291,13 +293,13 @@ export default async function PromptsPage({
         <div className="space-y-4 p-4">
           {researchIsStale ? (
             <Callout tone="warn" title="Research is more than 30 days old">
-              Refresh it before the next production library if competitors or product facts may have
-              changed.
+              Refresh it before the next production baseline if competitors or product facts may
+              have changed.
             </Callout>
           ) : null}
           {summary.project.promptStrategyEdited && approvedBrief ? (
             <Callout tone="warn" title="Strategy changed after approval">
-              Refresh and approve the brief again before generating a production library.
+              Refresh and approve the brief again before generating a production baseline.
             </Callout>
           ) : null}
           {draftBrief ? (
@@ -347,8 +349,8 @@ export default async function PromptsPage({
               </p>
             </div>
           ) : (
-            <Callout tone="warn" title="Research and approval required">
-              Build a cited market brief before generating production prompts.
+            <Callout tone="warn" title="Grounding and approval required">
+              Build and approve a cited grounding brief before generating production prompts.
             </Callout>
           )}
         </div>
@@ -356,22 +358,22 @@ export default async function PromptsPage({
       {sets.length ? (
         <Card className="mb-5">
           <CardHeader
-            title="Pre-export quality gate"
-            description="Production export requires exactly 50 live prompts, every coverage cell passing at 80 or higher, and human approval."
+            title="Baseline quality gate"
+            description={`Production export requires ${strategy.targetPromptCount} linked prompts per persona, every prompt scoring 80 or higher, and human approval.`}
             actions={
               <Badge
                 tone={
                   !containsMock &&
-                  totalPrompts === 50 &&
-                  approvedCount === 50 &&
+                  totalPrompts === expectedPromptCount &&
+                  approvedCount === expectedPromptCount &&
                   needsRevisionCount === 0
                     ? "success"
                     : "warn"
                 }
               >
                 {!containsMock &&
-                totalPrompts === 50 &&
-                approvedCount === 50 &&
+                totalPrompts === expectedPromptCount &&
+                approvedCount === expectedPromptCount &&
                 needsRevisionCount === 0
                   ? "export ready"
                   : "blocked"}
@@ -380,13 +382,16 @@ export default async function PromptsPage({
           />
           <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
             <QualityMetric
-              label="Coverage cells"
-              value={`${new Set(promptRows.map((prompt) => prompt.coverageKey)).size}/50`}
+              label="Funnel cells"
+              value={`${new Set(promptRows.map((prompt) => prompt.coverageKey)).size}/${expectedPromptCount}`}
             />
             <QualityMetric label="Passing drafts" value={String(readyCount + approvedCount)} />
             <QualityMetric label="Needs revision" value={String(needsRevisionCount)} />
             <QualityMetric label="Semantic risks" value={String(semanticRiskCount)} />
-            <QualityMetric label="Human approved" value={`${approvedCount}/50`} />
+            <QualityMetric
+              label="Human approved"
+              value={`${approvedCount}/${expectedPromptCount}`}
+            />
           </div>
         </Card>
       ) : null}
@@ -408,8 +413,8 @@ export default async function PromptsPage({
       ) : null}
       <Card className="mb-5">
         <CardHeader
-          title="Prompt strategy"
-          description="Approve the category, entity, competitor, qualifier, and coverage inputs used by generation."
+          title="Query Funnel strategy"
+          description="Approve the brand, category, competitor, buyer context, and bottom-up funnel shape used for every persona."
           actions={
             <Badge tone={readiness.ready && blueprint ? "success" : "warn"}>
               {readiness.ready && blueprint ? "ready" : "needs review"}
@@ -442,24 +447,24 @@ export default async function PromptsPage({
             </div>
           ) : null}
           {blueprint ? (
-            <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {Object.entries(strategy.topicTargets).map(([topic, count]) => (
-                <div key={topic} className="rounded-lg border border-surface-border px-3 py-2">
-                  <p className="text-xs text-ink-muted">
-                    {TOPIC_CLASS_LABELS[topic as keyof typeof TOPIC_CLASS_LABELS]}
-                  </p>
-                  <p className="text-lg font-semibold text-ink">{count}</p>
-                </div>
-              ))}
+            <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <QualityMetric
+                label="Pathways per persona"
+                value={String(strategy.pathwaysPerPersona)}
+              />
+              <QualityMetric label="BOFU anchors" value={String(strategy.funnelTargets.decision)} />
+              <QualityMetric
+                label="MOFU evaluations"
+                value={String(strategy.funnelTargets.consideration)}
+              />
+              <QualityMetric
+                label="TOFU awareness"
+                value={String(strategy.funnelTargets.awareness)}
+              />
             </div>
           ) : null}
           {canEditStrategy ? (
-            <PromptStrategyForm
-              projectId={projectId}
-              csrfToken={csrfToken}
-              strategy={strategy}
-              personaSlugs={activePersonas.map((item) => item.persona.slug)}
-            />
+            <PromptStrategyForm projectId={projectId} csrfToken={csrfToken} strategy={strategy} />
           ) : (
             <p className="text-sm text-ink-muted">
               Your role can review this strategy and export approved live prompts, but cannot edit
@@ -479,10 +484,10 @@ export default async function PromptsPage({
                   </option>
                 ))}
               </FilterField>
-              <FilterField label="Topic class" name="topic_class" value={filters.topicClass}>
-                {[...new Set(promptRows.map((prompt) => prompt.topicClass))].sort().map((value) => (
+              <FilterField label="Funnel stage" name="funnel_stage" value={filters.funnelStage}>
+                {Object.entries(FUNNEL_STAGE_LABELS).map(([value, label]) => (
                   <option key={value} value={value}>
-                    {value.replaceAll("_", " ")}
+                    {label}
                   </option>
                 ))}
               </FilterField>
@@ -528,7 +533,7 @@ export default async function PromptsPage({
         <Card>
           <EmptyState
             title="Generate personas first"
-            description="Prompt fanout uses the active persona profiles and their linked research signals."
+            description="Query Funnel generation uses the active persona profiles and their linked research signals."
             action={
               <ButtonLink href={`/projects/${projectId}/personas`} variant="primary" size="sm">
                 Go to Personas
@@ -539,15 +544,15 @@ export default async function PromptsPage({
       ) : !sets.length ? (
         <Card>
           <EmptyState
-            title="No prompt sets yet"
-            description="Save a complete prompt strategy, then generate one globally deduplicated library across the active personas."
+            title="No Query Funnels yet"
+            description="Approve the grounding brief and strategy, then generate a linked prompt baseline for every active persona."
           />
         </Card>
       ) : !visibleSets.length ? (
         <Card>
           <EmptyState
             title="No prompts match these filters"
-            description="Clear one or more filters to return to the complete library."
+            description="Clear one or more filters to return to the complete baseline."
             action={
               <ButtonLink href={`/projects/${projectId}/prompts`} variant="secondary" size="sm">
                 Clear filters
@@ -557,25 +562,43 @@ export default async function PromptsPage({
         </Card>
       ) : (
         <div className="space-y-5">
-          {visibleSets.map((set) => (
-            <Card key={set.set.id}>
-              <CardHeader
-                title={set.persona.name}
-                description={`${set.version.clusterCount} topic classes · ${set.version.promptCount} prompts · ${set.version.dataOrigin} generation`}
-                actions={
+          {visibleSets.map((set, setIndex) => (
+            <details key={set.set.id} className="card overflow-hidden" open={setIndex === 0}>
+              <summary className="flex cursor-pointer list-none flex-wrap items-start justify-between gap-3 px-4 py-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-ink">{set.persona.name}</h2>
+                  <p className="mt-0.5 text-xs text-ink-muted">
+                    {set.version.clusterCount} query pathways · {set.version.promptCount} prompts ·
+                    baseline v{set.version.version} · {set.version.dataOrigin} generation
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={set.version.dataOrigin === "mock" ? "warn" : "success"}>
                     latest completed
                   </Badge>
-                }
-              />
+                  <span className="text-xs font-medium text-ink-muted">View pathways</span>
+                </div>
+              </summary>
               <div className="divide-y divide-surface-border">
-                {set.clusters.map(({ cluster, prompts }) => (
-                  <section key={cluster.id} className="p-4">
-                    <div className="mb-3">
+                {set.clusters.map(({ cluster, prompts }, pathwayIndex) => (
+                  <details
+                    key={cluster.id}
+                    className="border-t border-surface-border"
+                    open={setIndex === 0 && pathwayIndex === 0}
+                  >
+                    <summary className="cursor-pointer list-none bg-surface px-4 py-4 hover:bg-surface-sunken">
                       <h3 className="text-sm font-semibold text-ink">{cluster.title}</h3>
                       <p className="mt-0.5 text-xs text-ink-muted">{cluster.informationNeed}</p>
-                    </div>
-                    <ol className="space-y-2">
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {(["decision", "consideration", "awareness"] as const).map((stage) => (
+                          <Badge key={stage} tone={stage === "decision" ? "accent" : "neutral"}>
+                            {FUNNEL_STAGE_LABELS[stage]} ·{" "}
+                            {prompts.filter((prompt) => prompt.journeyStage === stage).length}
+                          </Badge>
+                        ))}
+                      </div>
+                    </summary>
+                    <ol className="space-y-2 border-t border-surface-border bg-surface p-4">
                       {prompts.map((prompt) => (
                         <li
                           key={prompt.id}
@@ -586,14 +609,20 @@ export default async function PromptsPage({
                               {prompt.promptText}
                             </p>
                             <Badge tone="accent">
-                              {GEO_LABELS[prompt.geoCategory] ?? prompt.geoCategory}
+                              {FUNNEL_STAGE_LABELS[
+                                prompt.journeyStage as keyof typeof FUNNEL_STAGE_LABELS
+                              ] ?? prompt.journeyStage}
                             </Badge>
                           </div>
                           <p className="mt-1 text-2xs text-ink-subtle">
+                            {prompt.parentCoverageKey
+                              ? `follows ${prompt.parentCoverageKey} · `
+                              : "conversion anchor · "}
                             {prompt.signalIds.length} research refs ·{" "}
                             {prompt.promptType.replaceAll("_", " ")} ·{" "}
                             {prompt.questionArchetype.replaceAll("_", " ")} ·{" "}
-                            {prompt.journeyStage.replaceAll("_", " ")} · {prompt.businessLine}
+                            {GEO_LABELS[prompt.geoCategory] ?? prompt.geoCategory} ·{" "}
+                            {prompt.businessLine}
                           </p>
                           <p className="mt-1 text-2xs text-ink-subtle">
                             Quality {Math.round(prompt.qualityScore)}/100 · maximum similarity{" "}
@@ -695,23 +724,17 @@ export default async function PromptsPage({
                         </li>
                       ))}
                     </ol>
-                  </section>
+                  </details>
                 ))}
               </div>
-            </Card>
+            </details>
           ))}
         </div>
       )}
       <p className="mt-4 text-xs text-ink-subtle">
-        Export columns: Topic, Prompt, Tags, Regions, Language. Tags include persona, topic class,
-        prompt type, funnel stage, business line, tracked signal, and review status. CSV values use
-        RFC 4180 quoting and spreadsheet-formula protection.{" "}
-        <Link
-          className="underline"
-          href="https://help.tryprofound.com/articles/3730240593-create-manage-and-tag-prompts"
-        >
-          Profound format
-        </Link>
+        The baseline CSV preserves persona, pathway, prompt and parent IDs, funnel stage, intent,
+        brand mode, business line, evidence references, quality score, research snapshot, version,
+        market, and language. CSV values use RFC 4180 quoting and spreadsheet-formula protection.
       </p>
     </>
   );

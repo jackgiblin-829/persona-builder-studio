@@ -16,9 +16,9 @@ test("seeded three-tab workflow and legacy 404", async ({ page }) => {
   const workflow = page.getByRole("navigation", { name: "Project workflow" });
   await expect(workflow.getByRole("link", { name: /Data/ })).toBeVisible();
   await expect(workflow.getByRole("link", { name: /Personas/ })).toBeVisible();
-  await expect(workflow.getByRole("link", { name: /Prompts/ })).toBeVisible();
-  await workflow.getByRole("link", { name: /Prompts/ }).click();
-  await expect(page.getByRole("link", { name: /Download demo CSV/ })).toBeVisible();
+  await expect(workflow.getByRole("link", { name: /Query Funnels/ })).toBeVisible();
+  await workflow.getByRole("link", { name: /Query Funnels/ }).click();
+  await expect(page.getByRole("link", { name: /Download demo baseline/ })).toBeVisible();
   const legacy = await page.request.get("/brands/legacy");
   expect(legacy.status()).toBe(404);
 });
@@ -136,7 +136,7 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
     .toBe(1);
   await page.getByRole("button", { name: "Approve and freeze" }).click();
   await expect(page.getByText(/approved v\d+/i)).toBeVisible();
-  await page.getByRole("button", { name: "Generate demo prompts" }).click();
+  await page.getByRole("button", { name: "Generate demo baseline" }).click();
   await expect(page.getByText(/prompt generation started/i)).toBeVisible();
   await expect
     .poll(
@@ -144,24 +144,24 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
         await page.reload();
         return page.getByText("latest completed").count();
       },
-      { timeout: 90_000, message: "every active persona should receive a completed prompt set" },
+      { timeout: 90_000, message: "every active persona should receive a completed baseline" },
     )
     .toBeGreaterThanOrEqual(3);
-  await expect(page.getByText("Problem discovery").first()).toBeVisible();
-  await expect(page.getByText("Implementation and optimization").first()).toBeVisible();
+  await expect(page.getByText(/Bottom of funnel/).first()).toBeVisible();
+  await expect(page.getByText(/Top of funnel/).first()).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download demo CSV" }).click();
+  await page.getByRole("link", { name: "Download demo baseline" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/prompts\.csv$/);
   const downloadPath = await download.path();
   expect(downloadPath).not.toBeNull();
   const csv = await readFile(downloadPath!, "utf8");
-  expect(csv.startsWith('\uFEFF"Topic","Prompt","Tags","Regions","Language"\r\n')).toBe(true);
-  expect(csv.trim().split("\r\n")).toHaveLength(51);
-  expect(csv).toContain("topic_class:");
-  expect(csv).toContain("archetype:");
-  expect(csv).toContain("quality_band:");
-  expect(csv).toContain("research_snapshot:");
-  expect(csv).toContain("generation_mode:mock");
+  expect(csv.startsWith('\uFEFF"Baseline ID","Baseline Version","Persona","Pathway"')).toBe(true);
+  expect(csv.trim().split("\r\n")).toHaveLength(151);
+  expect(csv).toContain('"Prompt ID","Parent Prompt ID","Funnel Stage"');
+  expect(csv).toContain('"BOFU"');
+  expect(csv).toContain('"MOFU"');
+  expect(csv).toContain('"TOFU"');
+  expect(csv).toContain('"mock"');
 });

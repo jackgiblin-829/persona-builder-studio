@@ -670,6 +670,7 @@ export const generatedPrompts = pgTable(
       .references(() => personaVersions.id, { onDelete: "restrict" }),
     sequence: integer("sequence").notNull(),
     coverageKey: text("coverage_key").notNull().default("legacy"),
+    parentCoverageKey: text("parent_coverage_key"),
     promptText: text("prompt_text").notNull(),
     normalizedHash: text("normalized_hash").notNull(),
     geoCategory: geoCategoryEnum("geo_category").notNull(),

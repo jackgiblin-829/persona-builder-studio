@@ -11,16 +11,11 @@ export function PromptStrategyForm({
   projectId,
   csrfToken,
   strategy,
-  personaSlugs,
 }: {
   projectId: string;
   csrfToken: string;
   strategy: PromptStrategy;
-  personaSlugs: string[];
 }) {
-  const personaTargets = Object.entries(strategy.personaPromptTargets)
-    .map(([slug, count]) => `${slug}=${count}`)
-    .join("\n");
   return (
     <ActionForm
       action={updatePromptStrategyAction}
@@ -125,58 +120,37 @@ export function PromptStrategyForm({
         </Field>
       </div>
       <div>
-        <h3 className="mb-3 text-sm font-semibold text-ink">Coverage targets</h3>
+        <h3 className="mb-1 text-sm font-semibold text-ink">Query Funnel shape</h3>
+        <p className="mb-3 text-xs text-ink-muted">
+          Generation starts with purchase-ready anchors, then projects upward into evaluation and
+          awareness questions for every persona.
+        </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <CountField
-            label="Total prompts"
-            name="targetPromptCount"
-            value={strategy.targetPromptCount}
+            label="Pathways per persona"
+            name="pathwaysPerPersona"
+            value={strategy.pathwaysPerPersona}
           />
           <CountField
-            label="Brand and entity"
-            name="brandEntityTarget"
-            value={strategy.topicTargets.brand_entity_authority}
+            label="Bottom of funnel"
+            name="decisionTarget"
+            value={strategy.funnelTargets.decision}
           />
           <CountField
-            label="Category discovery"
-            name="categoryDiscoveryTarget"
-            value={strategy.topicTargets.unbranded_category_discovery}
+            label="Middle of funnel"
+            name="considerationTarget"
+            value={strategy.funnelTargets.consideration}
           />
           <CountField
-            label="Competitive comparison"
-            name="competitiveComparisonTarget"
-            value={strategy.topicTargets.competitive_comparison}
-          />
-          <CountField
-            label="Buyer education"
-            name="buyerEducationTarget"
-            value={strategy.topicTargets.buyer_education}
-          />
-          <CountField
-            label="Reputation and risk"
-            name="reputationRiskTarget"
-            value={strategy.topicTargets.reputation_risk}
-          />
-          <CountField
-            label="Product-line use cases"
-            name="productLineTarget"
-            value={strategy.topicTargets.product_line_use_cases}
+            label="Top of funnel"
+            name="awarenessTarget"
+            value={strategy.funnelTargets.awareness}
           />
         </div>
+        <p className="mt-2 text-xs text-ink-subtle">
+          Current baseline: {strategy.targetPromptCount} prompts per persona.
+        </p>
       </div>
-      <Field
-        label="Persona targets"
-        htmlFor="personaPromptTargets"
-        hint={`Optional. Use persona-slug=count and make the counts total ${strategy.targetPromptCount}. Active slugs: ${personaSlugs.join(", ") || "none yet"}. Leave blank for an even allocation.`}
-      >
-        <Textarea
-          id="personaPromptTargets"
-          name="personaPromptTargets"
-          rows={Math.max(3, personaSlugs.length)}
-          defaultValue={personaTargets}
-          placeholder="founder-ceo=20"
-        />
-      </Field>
       <SubmitButton label="Save prompt strategy" pendingLabel="Saving…" />
     </ActionForm>
   );
@@ -185,7 +159,7 @@ export function PromptStrategyForm({
 function CountField({ label, name, value }: { label: string; name: string; value: number }) {
   return (
     <Field label={label} htmlFor={name}>
-      <Input id={name} name={name} type="number" min={0} max={100} defaultValue={value} required />
+      <Input id={name} name={name} type="number" min={1} max={100} defaultValue={value} required />
     </Field>
   );
 }

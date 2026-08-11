@@ -18,8 +18,6 @@ Reddit, brands, and prompt topics poll documented `202` warm-up responses using 
 
 Official reference: <https://sparktoro.com/api/docs>
 
-## Profound CSV
+## Query Funnel baseline CSV
 
-There is no Profound API synchronization. The Prompts tab exports one RFC 4180 CSV with `Topic`, `Prompt`, `Tags`, `Regions`, and `Language`. Tags include persona, archetype, quality band, research snapshot, topic class, prompt type, funnel stage, business line, tracked signal, and review status. Formula-leading cells are protected for spreadsheet safety. Mock-origin libraries are downloaded only as clearly labeled demo files; production exports require exactly 50 approved live prompts with passing quality scores and complete coverage.
-
-Official reference: <https://help.tryprofound.com/articles/3730240593-create-manage-and-tag-prompts>
+There is no prompt execution or tracking integration in this release. The Query Funnels tab exports one neutral RFC 4180 CSV containing baseline version, persona, pathway, prompt ID, parent prompt ID, funnel stage, intent, prompt text, brand mode, topic class, archetype, business line, buyer context, quality score, market, language, evidence references, research snapshot, generation date, and generation mode. Formula-leading cells are protected for spreadsheet safety. Mock-origin baselines are clearly labeled; production exports require a complete, approved, quality-passed baseline for every active persona.

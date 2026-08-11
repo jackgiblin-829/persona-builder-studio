@@ -7,7 +7,7 @@ import { BrandIcon, cn } from "@/components/ui";
 const TABS = [
   { slug: "data", label: "Data", icon: "upload" as const },
   { slug: "personas", label: "Personas", icon: "check-circle" as const },
-  { slug: "prompts", label: "Prompts", icon: "list" as const },
+  { slug: "prompts", label: "Query Funnels", icon: "list" as const },
 ];
 
 export function ProjectNav({ projectId }: { projectId: string }) {

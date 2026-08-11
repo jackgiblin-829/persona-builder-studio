@@ -251,16 +251,13 @@ registerMockGenerator(PROMPT_GENERATION.id, (context) => {
     competitors: ["Alternative Platform"],
     buyerQualifiers: [],
     freshnessFacts: [],
+    pathwaysPerPersona: 3,
     targetPromptCount: blueprint.length,
-    topicTargets: {
-      brand_entity_authority: 0,
-      unbranded_category_discovery: 0,
-      competitive_comparison: 0,
-      buyer_education: 0,
-      reputation_risk: 0,
-      product_line_use_cases: 0,
+    funnelTargets: {
+      awareness: Math.max(1, Math.floor(blueprint.length * 0.6)),
+      consideration: Math.max(1, Math.floor(blueprint.length * 0.3)),
+      decision: Math.max(1, blueprint.length - Math.floor(blueprint.length * 0.9)),
     },
-    personaPromptTargets: {},
   };
   const signalIds = signals.map((signal) => signal.id);
   const safeIds = signalIds.length ? signalIds : ["mock-signal"];
@@ -360,6 +357,33 @@ registerMockGenerator(PROMPT_GENERATION.id, (context) => {
     }
     return `For ${buyer}, what should I look for when shortlisting ${cell.businessLine} providers in ${category} to assess ${cell.signalTracked}?`;
   };
+  const contextualize = (cell: CoverageCell, prompt: string) => {
+    const focus = [
+      "implementation effort",
+      "security requirements",
+      "total operating cost",
+      "proof of outcomes",
+      "stakeholder adoption",
+      "integration fit",
+      "vendor risk",
+      "change management",
+      "time to value",
+      "reporting needs",
+      "governance",
+      "customer support",
+      "scalability",
+      "data quality",
+      "procurement concerns",
+      "team capacity",
+      "long-term flexibility",
+    ][cell.sequence % 17]!;
+    const moment = {
+      decision: "before a final selection",
+      consideration: "while narrowing the shortlist",
+      awareness: "while first understanding the problem",
+    }[cell.funnelStage];
+    return `${prompt} Include ${focus} in the answer ${moment}.`;
+  };
   return {
     blueprint_summary:
       "The approved strategy is expanded into two category-grounded candidates per coverage cell with project-wide phrasing variation.",
@@ -367,7 +391,7 @@ registerMockGenerator(PROMPT_GENERATION.id, (context) => {
       [promptFor(cell), alternatePromptFor(cell)].map((promptText, index) => ({
         plan_key: cell.key,
         candidate_key: `${cell.key}-${index === 0 ? "a" : "b"}`,
-        prompt_text: promptText,
+        prompt_text: contextualize(cell, promptText),
         intent: `${cell.topicClass.replaceAll("_", " ")} for ${cell.businessLine}`,
         expected_answer_elements: [
           "A direct answer grounded in the named category or entity",

@@ -102,9 +102,6 @@ registerJob(JOB_TYPES.researchMarket, async ({ job }) => {
         `The researched strategy is incomplete: ${readiness.blockers.join(" ")}`,
       );
     }
-    if (result.data.strategy.targetPromptCount !== 50) {
-      throw new AppError("schema_validation", "The researched strategy must retain 50 prompts.");
-    }
     const [latest] = await db
       .select({ value: max(marketResearchBriefs.version) })
       .from(marketResearchBriefs)

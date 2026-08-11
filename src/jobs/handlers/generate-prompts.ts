@@ -3,9 +3,8 @@ import { and, desc, eq, inArray, isNull, max } from "drizzle-orm";
 import { cosineSimilarity, getOpenAIAdapter, type OpenAIAdapter } from "@/adapters/openai";
 import {
   buildCoverageBlueprint,
+  FUNNEL_STAGE_LABELS,
   strategyReadiness,
-  TOPIC_CLASSES,
-  TOPIC_CLASS_LABELS,
   type CoverageCell,
   type PromptStrategy,
 } from "@/contracts/prompt-strategy";
@@ -152,7 +151,7 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
     };
     await updateRun(runId, { stage: "creating_prompts", progress: 25 });
     let selected = selectBestByCell(
-      await generateAndEvaluate(context, blueprint, [], "initial"),
+      await generateAndEvaluateInBatches(context, blueprint, [], "initial"),
       blueprint,
     );
 
@@ -173,7 +172,7 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
       const failedCells = blueprint.filter((cell) => failedKeys.includes(cell.key));
       const fixed = selected.filter((prompt) => !failedKeys.includes(prompt.candidate.plan_key));
       const repaired = selectBestByCell(
-        await generateAndEvaluate(context, failedCells, fixed, `repair_${round}`),
+        await generateAndEvaluateInBatches(context, failedCells, fixed, `repair_${round}`),
         failedCells,
       );
       const repairedByKey = new Map(repaired.map((prompt) => [prompt.candidate.plan_key, prompt]));
@@ -203,7 +202,7 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
       stage: "ready",
       progress: 100,
       warnings: needsRevision
-        ? [`${needsRevision} prompts need revision before the library can be exported.`]
+        ? [`${needsRevision} prompts need revision before the baseline can be exported.`]
         : [],
       resultingVersionIds: versionIds,
       finishedAt: new Date(),
@@ -222,6 +221,29 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
     throw error;
   }
 });
+
+async function generateAndEvaluateInBatches(
+  context: Parameters<typeof generateAndEvaluate>[0],
+  cells: CoverageCell[],
+  fixed: EvaluatedPrompt[],
+  operation: string,
+) {
+  const evaluated: EvaluatedPrompt[] = [];
+  const batches = [...new Set(cells.map((cell) => cell.personaSlug))].map((personaSlug) =>
+    cells.filter((cell) => cell.personaSlug === personaSlug),
+  );
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index]!;
+    const result = await generateAndEvaluate(
+      context,
+      batch,
+      [...fixed, ...evaluated],
+      `${operation}_${index + 1}`,
+    );
+    evaluated.push(...result);
+  }
+  return evaluated;
+}
 
 export async function generateAndEvaluate(
   context: {
@@ -499,7 +521,7 @@ export function applyLibraryFailures(selected: EvaluatedPrompt[], blueprint: Cov
       const b = selected[right]!;
       if (semanticSimilarity(a.candidate.prompt_text, b.candidate.prompt_text) >= 0.9) {
         const weaker = a.scores.total <= b.scores.total ? a : b;
-        addFailure(weaker.candidate.plan_key, "Near-duplicate wording in the selected library.");
+        addFailure(weaker.candidate.plan_key, "Near-duplicate wording in the selected baseline.");
       }
     }
   }
@@ -518,7 +540,7 @@ function validateArchetypeDistribution(blueprint: CoverageCell[]) {
   );
   const maximum = Math.ceil(blueprint.length * 0.2);
   if ([...counts.values()].some((count) => count > maximum)) {
-    throw new AppError("validation", "One question archetype exceeds 20% of the library.");
+    throw new AppError("validation", "One question archetype exceeds 20% of the baseline.");
   }
 }
 
@@ -708,10 +730,13 @@ async function persistPromptLibraryAtomically(
         .select({ value: max(promptSetVersions.version) })
         .from(promptSetVersions)
         .where(eq(promptSetVersions.promptSetId, set.id));
-      const topicGroups = TOPIC_CLASSES.map((topic) => ({
-        topic,
-        cells: personaCells.filter((cell) => cell.topicClass === topic),
-      })).filter((group) => group.cells.length > 0);
+      const pathwayGroups = [...new Set(personaCells.map((cell) => cell.pathwayKey))].map(
+        (pathwayKey) => ({
+          pathwayKey,
+          label: personaCells.find((cell) => cell.pathwayKey === pathwayKey)!.pathwayLabel,
+          cells: personaCells.filter((cell) => cell.pathwayKey === pathwayKey),
+        }),
+      );
       const versionId = newId(ID_PREFIXES.promptSetVersion);
       await tx.insert(promptSetVersions).values({
         id: versionId,
@@ -721,7 +746,7 @@ async function persistPromptLibraryAtomically(
         personaVersionId: item.version.id,
         generationRunId: runId,
         version: (latest?.value ?? 0) + 1,
-        clusterCount: topicGroups.length,
+        clusterCount: pathwayGroups.length,
         promptCount: personaCells.length,
         modelProvider: built.modelProvider,
         modelId: built.modelId,
@@ -731,8 +756,8 @@ async function persistPromptLibraryAtomically(
         qualitySummary: qualitySummary(personaCells.map((cell) => outputByKey.get(cell.key)!)),
       });
 
-      for (let groupIndex = 0; groupIndex < topicGroups.length; groupIndex++) {
-        const group = topicGroups[groupIndex]!;
+      for (let groupIndex = 0; groupIndex < pathwayGroups.length; groupIndex++) {
+        const group = pathwayGroups[groupIndex]!;
         const clusterId = newId(ID_PREFIXES.promptCluster);
         const groupPrompts = group.cells.map((cell) => outputByKey.get(cell.key)!);
         const groupSignalIds = [
@@ -745,11 +770,12 @@ async function persistPromptLibraryAtomically(
           promptSetVersionId: versionId,
           personaVersionId: item.version.id,
           sequence: groupIndex,
-          title: TOPIC_CLASS_LABELS[group.topic],
-          slug: slugify(group.topic),
-          seedTopic: group.topic,
-          informationNeed: `${item.version.name} needs ${group.cells.length} distinct prompts covering ${TOPIC_CLASS_LABELS[group.topic].toLowerCase()}.`,
-          rationale: "This cluster comes from the approved research brief and coverage blueprint.",
+          title: group.label,
+          slug: slugify(group.pathwayKey),
+          seedTopic: group.cells[0]!.businessLine,
+          informationNeed: `${item.version.name} moves from ${FUNNEL_STAGE_LABELS.decision.toLowerCase()} selection questions through evaluation and awareness for ${group.cells[0]!.businessLine}.`,
+          rationale:
+            "This Query Funnel pathway begins with a conversion-adjacent anchor and projects upward using the approved persona and evidence brief.",
           signalIds: groupSignalIds,
         });
 
@@ -767,6 +793,7 @@ async function persistPromptLibraryAtomically(
             personaVersionId: item.version.id,
             sequence: promptIndex,
             coverageKey: cell.key,
+            parentCoverageKey: cell.parentKey,
             promptText: prompt.prompt_text,
             normalizedHash: sha256(normalizePromptText(prompt.prompt_text)),
             geoCategory: cell.geoCategory,

@@ -17,7 +17,7 @@ export default async function SignInPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight">Persona Builder Studio</h1>
         <p className="mt-1 text-sm text-ink-muted">
-          Evidence-backed personas and GEO query-fanout prompt sets.
+          Evidence-backed personas and Query Funnel prompt baselines.
         </p>
       </div>
 

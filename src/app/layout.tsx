@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Persona Builder Studio",
   description:
-    "Build evidence-backed personas and GEO query-fanout prompt sets from research and SparkToro.",
+    "Build evidence-backed personas and Query Funnel prompt baselines from brand research and SparkToro.",
   robots: { index: false, follow: false },
 };
 

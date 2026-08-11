@@ -3,7 +3,7 @@
 import { useActionState, type ReactNode } from "react";
 import { useFormStatus } from "react-dom";
 import { IDLE, type ActionState } from "@/app/actions/state";
-import { Button, Callout, ErrorState, cn } from "@/components/ui";
+import { Button, Callout, ErrorState, cn, IconButton, type BrandIconName } from "@/components/ui";
 import { CSRF_FIELD } from "@/lib/auth/constants";
 
 export type ServerAction = (prev: ActionState, formData: FormData) => Promise<ActionState>;
@@ -54,6 +54,46 @@ export function SubmitButton({
     >
       {pending ? (pendingLabel ?? "Working…") : label}
     </Button>
+  );
+}
+
+export function SubmitIconButton({
+  icon,
+  label,
+  pendingLabel,
+  variant = "danger",
+  size = "sm",
+  className,
+  confirm,
+  disabled = false,
+}: {
+  icon: BrandIconName;
+  label: string;
+  pendingLabel?: string;
+  variant?: "primary" | "secondary" | "danger";
+  size?: "sm" | "md";
+  className?: string;
+  confirm?: string;
+  disabled?: boolean;
+}) {
+  const { pending } = useFormStatus();
+  return (
+    <IconButton
+      type="submit"
+      icon={icon}
+      label={pending ? (pendingLabel ?? "Working…") : label}
+      variant={variant}
+      size={size}
+      disabled={pending || disabled}
+      className={className}
+      onClick={
+        confirm
+          ? (event) => {
+              if (!window.confirm(confirm)) event.preventDefault();
+            }
+          : undefined
+      }
+    />
   );
 }
 

@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "NODE_OPTIONS=--conditions=react-server tsx scripts/migrate.ts",
+    "db:migrate:safe": "NODE_OPTIONS=--conditions=react-server tsx scripts/migrate.ts --safe",
     "db:reset": "NODE_OPTIONS=--conditions=react-server tsx scripts/reset-db.ts",
     "db:seed": "NODE_OPTIONS=--conditions=react-server tsx scripts/seed.ts",
     "db:setup": "npm run db:migrate && npm run db:seed",

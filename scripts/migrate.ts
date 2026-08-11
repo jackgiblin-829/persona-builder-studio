@@ -12,6 +12,7 @@ import { resolveDatabaseUrl } from "./database-url";
  */
 async function main() {
   const url = resolveDatabaseUrl(process.argv.includes("--test"));
+  const safeMode = process.argv.includes("--safe");
 
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   const target = new URL(url).pathname.replace(/^\//, "");
@@ -38,6 +39,11 @@ async function main() {
     // schema before applying the new single initial migration.
     const currentNames = new Set(files);
     if ([...applied].some((name) => !currentNames.has(name))) {
+      if (safeMode) {
+        throw new Error(
+          `${target}: safe migration refused because legacy migration history would require a reset`,
+        );
+      }
       if (
         process.env.NODE_ENV === "production" &&
         process.env.ALLOW_PERSONA_STUDIO_RESET !== "true"
