@@ -20,6 +20,7 @@ import { AppError, ImmutableError, NotFoundError, ValidationError } from "@/lib/
 import { newId, slugify, ID_PREFIXES } from "@/lib/ids";
 import { PERSONA_FIELD_TYPES, PROVENANCE } from "@/prompts/schemas";
 import { recordAudit } from "./audit";
+import { getSegmentEvidence, type SegmentEvidenceRow } from "./segments";
 
 /**
  * Personas (§14, §16).
@@ -308,11 +309,13 @@ export type PersonaFieldWithEvidence = typeof personaFields.$inferSelect & {
   evidence: FieldEvidenceRow[];
 };
 
+export type PersonaFieldGroup = { fieldType: PersonaFieldType; fields: PersonaFieldWithEvidence[] };
+
 export type PersonaDetail = {
   persona: typeof personas.$inferSelect;
   version: typeof personaVersions.$inferSelect;
   /** Grouped in `FIELD_TYPE_ORDER`, empty groups omitted. */
-  groups: { fieldType: PersonaFieldType; fields: PersonaFieldWithEvidence[] }[];
+  groups: PersonaFieldGroup[];
   versions: {
     id: string;
     version: number;
@@ -322,7 +325,9 @@ export type PersonaDetail = {
     changeSummary: string | null;
     approvedAt: Date | null;
   }[];
-  segment: { id: string; label: string; slug: string; status: string } | null;
+  segment:
+    | (typeof segmentCandidates.$inferSelect & { evidence: SegmentEvidenceRow[] })
+    | null;
   generatedByName: string | null;
   approvedByName: string | null;
   /** True when this version can be edited: draft or needs_review, never approved. */
@@ -382,18 +387,16 @@ export async function getPersonaDetail(
     fields: fields.filter((field) => field.fieldType === fieldType),
   })).filter((group) => group.fields.length > 0);
 
-  const [segment] = persona.segmentCandidateId
+  const [segmentRow] = persona.segmentCandidateId
     ? await db
-        .select({
-          id: segmentCandidates.id,
-          label: segmentCandidates.label,
-          slug: segmentCandidates.slug,
-          status: segmentCandidates.status,
-        })
+        .select()
         .from(segmentCandidates)
         .where(eq(segmentCandidates.id, persona.segmentCandidateId))
         .limit(1)
     : [undefined];
+  const segment = segmentRow
+    ? { ...segmentRow, evidence: await getSegmentEvidence(segmentRow.id) }
+    : undefined;
 
   const [generatedBy, approvedBy] = await Promise.all([
     full.generatedByUserId ? userName(full.generatedByUserId) : Promise.resolve(null),

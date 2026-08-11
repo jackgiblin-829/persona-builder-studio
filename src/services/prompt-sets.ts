@@ -214,6 +214,20 @@ export async function listPromptSets(ctx: BrandContext): Promise<PromptSetListRo
 }
 
 /**
+ * Prompt set(s) generated from a single persona, for that persona's detail
+ * page. A persona has at most one prompt set in practice, but this returns a
+ * list rather than assuming it so a duplicated persona history can't surface
+ * the wrong set.
+ */
+export async function listPromptSetsForPersona(
+  ctx: BrandContext,
+  personaId: string,
+): Promise<PromptSetListRow[]> {
+  const rows = await listPromptSets(ctx);
+  return rows.filter((row) => row.personaId === personaId);
+}
+
+/**
  * Approved prompt-set versions for the brand — the picker milestone 7's
  * content workflows need alongside `listApprovedPersonaVersions`.
  */

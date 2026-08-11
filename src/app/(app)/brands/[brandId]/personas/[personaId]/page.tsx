@@ -12,6 +12,7 @@ import {
 import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { ConfidencePanel } from "@/components/confidence-panel";
 import { EvidenceDrawer, type AttachableEvidence } from "@/components/evidence-drawer";
+import { EvidenceTable } from "@/components/evidence-table";
 import {
   Badge,
   ButtonLink,
@@ -29,6 +30,7 @@ import {
   ProvenanceBadge,
   Select,
   StatusBadge,
+  Tabs,
   Textarea,
 } from "@/components/ui";
 import { hasCapability, requireBrandAccess } from "@/lib/auth/context";
@@ -39,13 +41,25 @@ import {
   getPersonaDetail,
   listApprovedEvidenceForAttachment,
   type PersonaDetail,
+  type PersonaFieldGroup,
   type PersonaFieldWithEvidence,
 } from "@/services/personas";
+import { listPromptSetsForPersona, type PromptSetListRow } from "@/services/prompt-sets";
 
 export const dynamic = "force-dynamic";
 
 /** How many approved records the per-field attach control offers, highest quality first. */
 const ATTACHABLE_LIMIT = 25;
+
+/** Presentation-only grouping of the schema's field types for a marketer/SEO audience. */
+const LIKES_FIELD_TYPES = [
+  "decision_criterion",
+  "success_metric",
+  "proof_preference",
+  "distinguishing_topic",
+] as const;
+const DISLIKES_FIELD_TYPES = ["objection", "constraint"] as const;
+const VOCABULARY_FIELD_TYPES = ["vocabulary", "recurring_question"] as const;
 
 export default async function PersonaDetailPage({
   params,
@@ -62,8 +76,9 @@ export default async function PersonaDetailPage({
       : undefined;
 
   const ctx = await requireBrandAccess(brandId);
-  const [detail, attachable, csrfToken] = await Promise.all([
+  const [detail, promptSets, attachable, csrfToken] = await Promise.all([
     getPersonaDetail(ctx, personaId, requestedVersion),
+    listPromptSetsForPersona(ctx, personaId),
     // Every field renders its own attach control, so this list is duplicated
     // once per field in the HTML. Kept deliberately short: at 200 records and
     // thirty-odd fields the page ballooned to megabytes of <option> elements.
@@ -75,13 +90,27 @@ export default async function PersonaDetailPage({
   const canEdit = hasCapability(ctx, "persona:generate");
   const canApprove = hasCapability(ctx, "persona:approve");
   const canExport = hasCapability(ctx, "export:read");
-  const { persona, version } = detail;
+  const { version } = detail;
   const editable = canEdit && detail.mutable;
 
   const missingCore = detail.coreCoverage.filter((entry) => entry.supported === 0);
   /** Only one draft may exist at a time, so the create-version control is gated on this. */
   const openDraft = detail.versions.find((row) => row.status === "draft");
   const exportBase = `/brands/${brandId}/personas/${personaId}/export?version=${version.version}`;
+
+  const fieldRowProps = { brandId, personaId, editable, canApprove: canApprove && detail.mutable, csrfToken, attachable };
+
+  const pickGroups = (types: readonly string[]) =>
+    detail.groups.filter((group) => types.includes(group.fieldType));
+  const likesGroups = pickGroups(LIKES_FIELD_TYPES);
+  const dislikesGroups = pickGroups(DISLIKES_FIELD_TYPES);
+  const vocabularyGroups = pickGroups(VOCABULARY_FIELD_TYPES);
+  const shownElsewhere = new Set<string>([
+    ...LIKES_FIELD_TYPES,
+    ...DISLIKES_FIELD_TYPES,
+    ...VOCABULARY_FIELD_TYPES,
+  ]);
+  const allFieldsGroups = detail.groups.filter((group) => !shownElsewhere.has(group.fieldType));
 
   return (
     <>
@@ -148,8 +177,127 @@ export default async function PersonaDetailPage({
         </div>
       ) : null}
 
+      <div className="mt-5">
+        <Tabs
+          tabs={[
+            {
+              id: "overview",
+              label: "Overview",
+              content: (
+                <OverviewTab
+                  brandId={brandId}
+                  personaId={personaId}
+                  detail={detail}
+                  canEdit={canEdit}
+                  canApprove={canApprove}
+                  canExport={canExport}
+                  csrfToken={csrfToken}
+                  openDraft={openDraft}
+                  exportBase={exportBase}
+                />
+              ),
+            },
+            {
+              id: "segment",
+              label: "Segment: why & how built",
+              content: <SegmentTab brandId={brandId} detail={detail} />,
+            },
+            {
+              id: "likes",
+              label: "Likes & priorities",
+              content: (
+                <FieldGroupsTab
+                  groups={likesGroups}
+                  emptyDescription="No decision criteria, success metrics, proof preferences or distinguishing topics recorded on this version yet."
+                  {...fieldRowProps}
+                />
+              ),
+            },
+            {
+              id: "dislikes",
+              label: "Dislikes & friction",
+              content: (
+                <FieldGroupsTab
+                  groups={dislikesGroups}
+                  emptyDescription="No objections or constraints recorded on this version yet."
+                  {...fieldRowProps}
+                />
+              ),
+            },
+            {
+              id: "vocabulary",
+              label: "Vocabulary & voice",
+              content: (
+                <FieldGroupsTab
+                  groups={vocabularyGroups}
+                  emptyDescription="No vocabulary or recurring questions recorded on this version yet."
+                  {...fieldRowProps}
+                />
+              ),
+            },
+            {
+              id: "fields",
+              label: "All fields",
+              content: (
+                <>
+                  <FieldGroupsTab
+                    groups={allFieldsGroups}
+                    emptyDescription="This version has no fields. Regenerate the persona from its segment."
+                    {...fieldRowProps}
+                  />
+                  <Card className="mt-4">
+                    <CardHeader
+                      title="Excluded assumptions"
+                      description="Recorded on every version so the refusal to infer these attributes is visible rather than assumed."
+                    />
+                    <ul className="list-disc space-y-1 px-8 py-3 text-sm text-ink-muted">
+                      {version.excludedAssumptions.map((assumption) => (
+                        <li key={assumption}>{assumption}</li>
+                      ))}
+                    </ul>
+                  </Card>
+                </>
+              ),
+            },
+            {
+              id: "prompts",
+              label: "Prompts",
+              content: <PromptsTab brandId={brandId} promptSets={promptSets} />,
+            },
+          ]}
+        />
+      </div>
+    </>
+  );
+}
+
+function OverviewTab({
+  brandId,
+  personaId,
+  detail,
+  canEdit,
+  canApprove,
+  canExport,
+  csrfToken,
+  openDraft,
+  exportBase,
+}: {
+  brandId: string;
+  personaId: string;
+  detail: PersonaDetail;
+  canEdit: boolean;
+  canApprove: boolean;
+  canExport: boolean;
+  csrfToken: string;
+  openDraft: PersonaDetail["versions"][number] | undefined;
+  exportBase: string;
+}) {
+  const { persona, version } = detail;
+
+  return (
+    <>
       {/* ── Versions ─────────────────────────────────────────────────────── */}
-      <Card className="mt-5">
+      <Card>
         <CardHeader
           title="Versions"
           description="Approved versions are never overwritten. Each revision records its parent and a change summary."
@@ -193,7 +341,7 @@ export default async function PersonaDetailPage({
 
       {/* ── Provenance ───────────────────────────────────────────────────── */}
       <Card className="mt-4">
-        <CardHeader title="Provenance and scope" />
+        <CardHeader title="Identity and scope" />
         <div className="space-y-3 px-4 py-3">
           <KeyValue
             items={[
@@ -201,22 +349,15 @@ export default async function PersonaDetailPage({
               {
                 label: "Segment",
                 value: detail.segment ? (
-                  <Link
-                    href={`/brands/${brandId}/segments/${detail.segment.id}`}
-                    className="text-accent hover:underline"
-                  >
-                    {detail.segment.label}
-                  </Link>
+                  <span className="text-ink">
+                    {detail.segment.label} — see the &ldquo;Segment: why &amp; how built&rdquo; tab
+                  </span>
                 ) : (
                   "— (duplicated persona, not tied to a segment)"
                 ),
               },
               { label: "Journey stages", value: <Chips values={version.journeyStages} /> },
               { label: "Information depth", value: version.informationDepth ?? "—" },
-              {
-                label: "Evidence cutoff",
-                value: version.evidenceCutoff?.toISOString().slice(0, 10) ?? "—",
-              },
               {
                 label: "Generated",
                 value: `${version.generatedAt.toISOString().slice(0, 16).replace("T", " ")}${detail.generatedByName ? ` by ${detail.generatedByName}` : ""}`,
@@ -227,31 +368,8 @@ export default async function PersonaDetailPage({
                   ? `${version.approvedAt.toISOString().slice(0, 16).replace("T", " ")}${detail.approvedByName ? ` by ${detail.approvedByName}` : ""}`
                   : "—",
               },
-              {
-                label: "Model",
-                value: `${version.modelProvider ?? "—"} / ${version.modelId ?? "—"}`,
-              },
-              { label: "Prompt template", value: version.promptTemplateVersion ?? "—" },
-              { label: "Schema version", value: version.schemaVersion ?? "—" },
-              {
-                label: "Source mix",
-                value: (
-                  <Chips
-                    values={Object.entries(version.sourceMix).map(
-                      ([source, n]) => `${source} (${n})`,
-                    )}
-                  />
-                ),
-              },
             ]}
           />
-
-          <div>
-            <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
-              Segment definition
-            </p>
-            <p className="mt-1 text-sm text-ink">{version.segmentDefinition}</p>
-          </div>
         </div>
       </Card>
 
@@ -397,72 +515,330 @@ export default async function PersonaDetailPage({
           </div>
         </Card>
       ) : null}
+    </>
+  );
+}
 
-      {/* ── Fields ───────────────────────────────────────────────────────── */}
-      {detail.groups.length === 0 ? (
-        <Card className="mt-4">
-          <EmptyState
-            title="This version has no fields"
-            description="Nothing was stored for this version. Regenerate the persona from its segment."
-          />
-        </Card>
-      ) : (
-        detail.groups.map((group) => {
-          const meta = FIELD_TYPE_META[group.fieldType];
-          return (
-            <Card key={group.fieldType} className="mt-4">
-              <CardHeader
-                title={
-                  <span className="flex flex-wrap items-center gap-2">
-                    {meta.label}
-                    {meta.core ? (
-                      <Badge tone="accent" title="One of the five required core fields">
-                        core
-                      </Badge>
-                    ) : null}
-                    {meta.structural ? (
-                      <Badge
-                        tone="neutral"
-                        title="A statement about scope or process rather than a claim about the buyer"
-                      >
-                        scope
-                      </Badge>
-                    ) : null}
-                  </span>
-                }
-                description={meta.description}
-              />
-              <ul className="divide-y divide-surface-border">
-                {group.fields.map((field) => (
-                  <PersonaFieldRow
-                    key={field.id}
-                    brandId={brandId}
-                    personaId={personaId}
-                    field={field}
-                    structural={meta.structural}
-                    editable={editable}
-                    canApprove={canApprove && detail.mutable}
-                    csrfToken={csrfToken}
-                    attachable={attachable}
-                  />
+function SegmentTab({ brandId, detail }: { brandId: string; detail: PersonaDetail }) {
+  const { segment, version } = detail;
+
+  if (!segment) {
+    return (
+      <Card>
+        <EmptyState
+          title="Not tied to a live segment"
+          description="This persona was duplicated from another one, so it has no segment of its own. The segment definition captured when it was generated is shown below for reference."
+        />
+        <div className="border-t border-surface-border px-4 py-3">
+          <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+            Segment definition at generation time
+          </p>
+          <p className="mt-1 text-sm text-ink">{version.segmentDefinition}</p>
+        </div>
+      </Card>
+    );
+  }
+
+  const supporting = segment.evidence.filter((row) => row.relation === "supports");
+  const contradicting = segment.evidence.filter((row) => row.relation === "contradicts");
+
+  return (
+    <>
+      <Card>
+        <CardHeader
+          title={segment.label}
+          description="Why this segment exists, and why it changes what gets said to it."
+          actions={
+            <span className="flex items-center gap-2">
+              <StatusBadge status={segment.status} />
+              <ButtonLink href={`/brands/${brandId}/segments/${segment.id}`} size="sm">
+                Manage this segment
+              </ButtonLink>
+            </span>
+          }
+        />
+        <div className="space-y-3 px-4 py-3">
+          <div>
+            <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+              Definition
+            </p>
+            <p className="mt-1 text-sm text-ink">{segment.definition}</p>
+          </div>
+          <div>
+            <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+              Why it changes prompts or content
+            </p>
+            <p className="mt-1 text-sm text-ink">{segment.whyItChangesPrompts}</p>
+          </div>
+          {segment.distinguishingVariables.length > 0 ? (
+            <div>
+              <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+                Distinguishing variables
+              </p>
+              <div className="mt-1">
+                <Chips values={segment.distinguishingVariables} />
+              </div>
+            </div>
+          ) : null}
+          {segment.coverageGaps.length > 0 ? (
+            <div>
+              <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+                Coverage gaps
+              </p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink-muted">
+                {segment.coverageGaps.map((gap) => (
+                  <li key={gap}>{gap}</li>
                 ))}
               </ul>
-            </Card>
-          );
-        })
-      )}
+            </div>
+          ) : null}
+          {segment.overlaps.length > 0 ? (
+            <div>
+              <p className="text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+                Overlaps with other segments
+              </p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink-muted">
+                {segment.overlaps.map((overlap) => (
+                  <li key={overlap.segmentSlug}>
+                    <code className="text-xs">{overlap.segmentSlug}</code> — {overlap.note}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </Card>
+
+      <div className="mt-4">
+        <ConfidencePanel
+          score={segment.confidence}
+          components={segment.confidenceComponents}
+          explanation={segment.confidenceExplanation}
+        />
+      </div>
+
+      <Card className="mt-4">
+        <CardHeader title="How this was built" />
+        <div className="grid gap-4 px-4 py-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+              Segment generation
+            </p>
+            <KeyValue
+              items={[
+                { label: "Run", value: <code className="text-xs">{segment.runId}</code> },
+                {
+                  label: "Model",
+                  value: `${segment.modelProvider ?? "—"} / ${segment.modelId ?? "—"}`,
+                },
+                { label: "Prompt template", value: segment.promptTemplateVersion ?? "—" },
+                { label: "Schema version", value: segment.schemaVersion ?? "—" },
+                {
+                  label: "Evidence cutoff",
+                  value: segment.evidenceCutoff?.toISOString().slice(0, 10) ?? "—",
+                },
+                {
+                  label: "Evidence coverage",
+                  value: `${(segment.evidenceCoverage * 100).toFixed(0)}% of approved evidence`,
+                },
+                {
+                  label: "Created",
+                  value: segment.createdAt.toISOString().slice(0, 16).replace("T", " "),
+                },
+              ]}
+            />
+          </div>
+          <div>
+            <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-ink-muted">
+              Persona generation
+            </p>
+            <KeyValue
+              items={[
+                {
+                  label: "Model",
+                  value: `${version.modelProvider ?? "—"} / ${version.modelId ?? "—"}`,
+                },
+                { label: "Prompt template", value: version.promptTemplateVersion ?? "—" },
+                { label: "Schema version", value: version.schemaVersion ?? "—" },
+                {
+                  label: "Evidence cutoff",
+                  value: version.evidenceCutoff?.toISOString().slice(0, 10) ?? "—",
+                },
+                {
+                  label: "Source mix",
+                  value: (
+                    <Chips
+                      values={Object.entries(version.sourceMix).map(
+                        ([source, n]) => `${source} (${n})`,
+                      )}
+                    />
+                  ),
+                },
+              ]}
+            />
+          </div>
+        </div>
+      </Card>
 
       <Card className="mt-4">
         <CardHeader
-          title="Excluded assumptions"
-          description="Recorded on every version so the refusal to infer these attributes is visible rather than assumed."
+          title={`Supporting evidence (${supporting.length})`}
+          description="Every record the segment rests on. Open one to see it in its original source context."
         />
-        <ul className="list-disc space-y-1 px-8 py-3 text-sm text-ink-muted">
-          {version.excludedAssumptions.map((assumption) => (
-            <li key={assumption}>{assumption}</li>
-          ))}
-        </ul>
+        {supporting.length === 0 ? (
+          <EmptyState
+            title="No supporting evidence"
+            description="This segment has no supporting records left — usually because their sources were deleted."
+          />
+        ) : (
+          <EvidenceTable brandId={brandId} rows={supporting} />
+        )}
       </Card>
+
+      <Card className="mt-4">
+        <CardHeader
+          title={`Contradicting evidence (${contradicting.length})`}
+          description="Records in scope for this segment that hedge or argue against its premise. They reduce confidence rather than being averaged away."
+        />
+        {contradicting.length === 0 ? (
+          <EmptyState
+            title="No contradicting evidence"
+            description="Nothing in the approved evidence argues against this segment. That is not the same as confirmation — check the coverage gaps."
+          />
+        ) : (
+          <EvidenceTable brandId={brandId} rows={contradicting} />
+        )}
+      </Card>
+    </>
+  );
+}
+
+function PromptsTab({ brandId, promptSets }: { brandId: string; promptSets: PromptSetListRow[] }) {
+  if (promptSets.length === 0) {
+    return (
+      <Card>
+        <EmptyState
+          title="No prompts generated yet"
+          description="Generate a prompt set from this persona to see its prompts here."
+          action={
+            <ButtonLink href={`/brands/${brandId}/prompt-sets`} size="sm">
+              Go to prompt sets
+            </ButtonLink>
+          }
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Prompt sets generated from this persona"
+        description="Every prompt in these sets was derived from this persona's fields and evidence."
+      />
+      <ul className="divide-y divide-surface-border">
+        {promptSets.map((set) => (
+          <li key={set.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+            <div className="min-w-0">
+              <Link
+                href={`/brands/${brandId}/prompt-sets/${set.id}`}
+                className="text-sm font-medium text-ink hover:text-accent hover:underline"
+              >
+                {set.name}
+              </Link>
+              <p className="text-xs text-ink-subtle">
+                {set.promptCount} prompt{set.promptCount === 1 ? "" : "s"} ·{" "}
+                {set.controlCount} control{set.controlCount === 1 ? "" : "s"}
+                {set.currentVersion ? ` · version ${set.currentVersion}` : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              {set.currentStatus ? <StatusBadge status={set.currentStatus} /> : null}
+              {set.duplicateWarnings > 0 ? (
+                <Badge tone="warn" title="Some prompts are near-duplicates of each other">
+                  {set.duplicateWarnings} duplicate warning{set.duplicateWarnings === 1 ? "" : "s"}
+                </Badge>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function FieldGroupsTab({
+  groups,
+  emptyDescription,
+  brandId,
+  personaId,
+  editable,
+  canApprove,
+  csrfToken,
+  attachable,
+}: {
+  groups: PersonaFieldGroup[];
+  emptyDescription: string;
+  brandId: string;
+  personaId: string;
+  editable: boolean;
+  canApprove: boolean;
+  csrfToken: string;
+  attachable: AttachableEvidence[];
+}) {
+  if (groups.length === 0) {
+    return (
+      <Card>
+        <EmptyState title="Nothing here yet" description={emptyDescription} />
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {groups.map((group, index) => {
+        const meta = FIELD_TYPE_META[group.fieldType];
+        return (
+          <Card key={group.fieldType} className={index === 0 ? "" : "mt-4"}>
+            <CardHeader
+              title={
+                <span className="flex flex-wrap items-center gap-2">
+                  {meta.label}
+                  {meta.core ? (
+                    <Badge tone="accent" title="One of the five required core fields">
+                      core
+                    </Badge>
+                  ) : null}
+                  {meta.structural ? (
+                    <Badge
+                      tone="neutral"
+                      title="A statement about scope or process rather than a claim about the buyer"
+                    >
+                      scope
+                    </Badge>
+                  ) : null}
+                </span>
+              }
+              description={meta.description}
+            />
+            <ul className="divide-y divide-surface-border">
+              {group.fields.map((field) => (
+                <PersonaFieldRow
+                  key={field.id}
+                  brandId={brandId}
+                  personaId={personaId}
+                  field={field}
+                  structural={meta.structural}
+                  editable={editable}
+                  canApprove={canApprove}
+                  csrfToken={csrfToken}
+                  attachable={attachable}
+                />
+              ))}
+            </ul>
+          </Card>
+        );
+      })}
     </>
   );
 }

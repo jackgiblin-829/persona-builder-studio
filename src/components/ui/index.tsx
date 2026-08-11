@@ -5,13 +5,11 @@ import type {
   TextareaHTMLAttributes,
   SelectHTMLAttributes,
 } from "react";
-import { clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
 import Link from "next/link";
+import { cn } from "@/lib/cn";
 
-export function cn(...inputs: Parameters<typeof clsx>): string {
-  return twMerge(clsx(inputs));
-}
+export { cn };
+export { Tabs } from "./tabs";
 
 // ── Buttons ─────────────────────────────────────────────────────────────────
 

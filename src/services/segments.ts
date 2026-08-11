@@ -220,7 +220,18 @@ export async function getSegment(
 
   if (!segment) throw new NotFoundError("Candidate segment");
 
-  const evidence = await db
+  const evidence = await getSegmentEvidence(segmentId);
+
+  return { segment, evidence };
+}
+
+/**
+ * Supporting/contradicting evidence for a segment, factored out of `getSegment`
+ * so callers that already hold the segment row (e.g. a persona's detail page)
+ * can pull the same evidence without a redundant scoped fetch.
+ */
+export async function getSegmentEvidence(segmentId: string): Promise<SegmentEvidenceRow[]> {
+  return db
     .select({
       id: evidenceRecords.id,
       relation: segmentCandidateEvidence.relation,
@@ -241,8 +252,6 @@ export async function getSegment(
     .innerJoin(dataSources, eq(dataSources.id, evidenceRecords.dataSourceId))
     .where(eq(segmentCandidateEvidence.segmentCandidateId, segmentId))
     .orderBy(segmentCandidateEvidence.relation, desc(evidenceRecords.qualityScore));
-
-  return { segment, evidence };
 }
 
 /**
