@@ -166,7 +166,7 @@ export function getObjectStorage(): ObjectStorage {
 
 export function storageKeyFor(parts: {
   organizationId: string;
-  brandId: string;
+  projectId: string;
   dataSourceId: string;
   filename: string;
 }): string {
@@ -174,8 +174,8 @@ export function storageKeyFor(parts: {
   return join(
     "orgs",
     parts.organizationId,
-    "brands",
-    parts.brandId,
+    "projects",
+    parts.projectId,
     "sources",
     parts.dataSourceId,
     safeName,

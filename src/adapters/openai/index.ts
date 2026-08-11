@@ -2,6 +2,7 @@ import "server-only";
 import { env } from "@/lib/env";
 import { VendorNotConfiguredError } from "@/lib/errors";
 import { resolveIntegration } from "@/services/integrations";
+import type { VendorMode } from "@/services/integrations";
 import { LiveOpenAIAdapter } from "./live";
 import { MockOpenAIAdapter } from "./mock";
 import "./mock/index";
@@ -24,10 +25,12 @@ const MODELS = {
  */
 export async function getOpenAIAdapter(
   organizationId: string,
+  modeOverride?: VendorMode,
 ): Promise<{ adapter: OpenAIAdapter; mode: "live" | "mock" }> {
   const resolved = await resolveIntegration(organizationId, "openai");
+  const mode = modeOverride ?? resolved.mode;
 
-  if (resolved.mode === "live") {
+  if (mode === "live") {
     if (resolved.missingFields.length > 0) {
       throw new VendorNotConfiguredError("openai", "getAdapter");
     }

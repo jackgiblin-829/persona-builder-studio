@@ -1,5 +1,6 @@
 import type {
   ReactNode,
+  CSSProperties,
   ButtonHTMLAttributes,
   InputHTMLAttributes,
   TextareaHTMLAttributes,
@@ -11,25 +12,96 @@ import { cn } from "@/lib/cn";
 export { cn };
 export { Tabs } from "./tabs";
 
+// ── 829 brand icons ─────────────────────────────────────────────────────────
+
+export type BrandIconName =
+  | "arrow"
+  | "arrow-left"
+  | "arrow-right"
+  | "arrow-external"
+  | "chev-left"
+  | "chev-right"
+  | "search"
+  | "filter"
+  | "upload"
+  | "check"
+  | "check-circle"
+  | "close"
+  | "error"
+  | "list"
+  | "grid"
+  | "menu"
+  | "nav-down"
+  | "cancel";
+
+const BRAND_ICON_PATHS: Record<BrandIconName, string> = {
+  arrow: "/icons/829/arrow.svg",
+  "arrow-left": "/icons/829/arrow-left.svg",
+  "arrow-right": "/icons/829/arrow-right.svg",
+  "arrow-external": "/icons/829/arrow-external.svg",
+  "chev-left": "/icons/829/chev-left.svg",
+  "chev-right": "/icons/829/chev-right.svg",
+  search: "/icons/829/search.svg",
+  filter: "/icons/829/filter.svg",
+  upload: "/icons/829/upload.svg",
+  check: "/icons/829/check.svg",
+  "check-circle": "/icons/829/check-circle.svg",
+  close: "/icons/829/close.svg",
+  error: "/icons/829/error.svg",
+  list: "/icons/829/list.svg",
+  grid: "/icons/829/grid.svg",
+  menu: "/icons/829/menu.svg",
+  "nav-down": "/icons/829/nav-down.svg",
+  cancel: "/icons/829/cancel.svg",
+};
+
+export function BrandIcon({
+  name,
+  className,
+  "aria-hidden": ariaHidden = true,
+}: {
+  name: BrandIconName;
+  className?: string;
+  "aria-hidden"?: boolean;
+}) {
+  return (
+    <span
+      aria-hidden={ariaHidden}
+      className={cn("brand-icon", className)}
+      style={{ "--brand-icon-url": `url("${BRAND_ICON_PATHS[name]}")` } as CSSProperties}
+    />
+  );
+}
+
 // ── Buttons ─────────────────────────────────────────────────────────────────
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 type ButtonSize = "sm" | "md";
 
 const BUTTON_BASE =
-  "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors " +
-  "disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center gap-1.5 font-medium transition-colors " +
+  "disabled:cursor-not-allowed disabled:opacity-60";
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: "bg-accent text-white hover:bg-accent-ink",
-  secondary: "border border-surface-border bg-surface text-ink hover:bg-surface-sunken",
-  danger: "bg-danger text-white hover:brightness-90",
-  ghost: "text-ink-muted hover:bg-surface-sunken hover:text-ink",
+  primary:
+    "brand-button-reveal rounded-full border-2 border-ink bg-ink text-white hover:border-ink hover:bg-ink",
+  secondary:
+    "brand-button-reveal rounded-full border-2 border-ink bg-transparent text-ink hover:bg-ink hover:text-white",
+  danger: "rounded-full border-2 border-danger bg-danger text-white hover:border-ink hover:bg-ink",
+  ghost:
+    "rounded-none border-0 bg-transparent px-0 text-ink underline decoration-2 underline-offset-4 hover:text-accent",
+};
+
+const ICON_BUTTON_VARIANTS: Record<Exclude<ButtonVariant, "ghost">, string> = {
+  primary: "rounded-full border-2 border-ink bg-ink text-white hover:border-ink hover:bg-ink",
+  secondary:
+    "rounded-full border-2 border-ink bg-transparent text-ink hover:bg-ink hover:text-white",
+  danger: "rounded-full border-2 border-danger bg-danger text-white hover:border-ink hover:bg-ink",
 };
 
 const BUTTON_SIZES: Record<ButtonSize, string> = {
-  sm: "px-2.5 py-1.5 text-xs",
-  md: "px-3.5 py-2 text-sm",
+  sm: "px-3.5 py-1.5 text-sm",
+  md: "px-5 py-2.5 text-base",
 };
 
 export function Button({
@@ -41,7 +113,7 @@ export function Button({
   return (
     <button
       {...props}
-      className={cn(BUTTON_BASE, BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)}
+      className={cn(BUTTON_BASE, BUTTON_SIZES[size], BUTTON_VARIANTS[variant], className)}
     />
   );
 }
@@ -62,10 +134,42 @@ export function ButtonLink({
   return (
     <Link
       href={href}
-      className={cn(BUTTON_BASE, BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)}
+      className={cn(BUTTON_BASE, BUTTON_SIZES[size], BUTTON_VARIANTS[variant], className)}
     >
       {children}
     </Link>
+  );
+}
+
+export function IconButton({
+  icon,
+  label,
+  variant = "secondary",
+  size = "md",
+  className,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  icon: BrandIconName;
+  label: string;
+  variant?: Exclude<ButtonVariant, "ghost">;
+  size?: ButtonSize;
+}) {
+  const dimensions = size === "sm" ? "h-9 w-9" : "h-12 w-12";
+  return (
+    <button
+      {...props}
+      aria-label={label}
+      title={label}
+      className={cn(
+        BUTTON_BASE,
+        dimensions,
+        ICON_BUTTON_VARIANTS[variant],
+        "rounded-full p-0",
+        className,
+      )}
+    >
+      <BrandIcon name={icon} className={size === "sm" ? "h-4 w-4" : "h-5 w-5"} />
+    </button>
   );
 }
 
@@ -131,7 +235,7 @@ export function PageHeader({
       {breadcrumb ? <div className="mb-1 text-xs text-ink-subtle">{breadcrumb}</div> : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
+          <h1 className="text-2xl font-medium text-ink">{title}</h1>
           {description ? (
             <p className="mt-1 max-w-3xl text-sm text-ink-muted">{description}</p>
           ) : null}
@@ -139,6 +243,282 @@ export function PageHeader({
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
     </header>
+  );
+}
+
+export function PageToolbar({
+  eyebrow,
+  title,
+  description,
+  actions,
+  meta,
+}: {
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  meta?: ReactNode;
+}) {
+  return (
+    <header className="mb-5 rounded-lg border border-surface-border bg-surface px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          {eyebrow ? (
+            <p className="mb-1 text-xs font-bold uppercase text-ink-muted">{eyebrow}</p>
+          ) : null}
+          <h1 className="text-2xl font-medium leading-tight text-ink">{title}</h1>
+          {description ? (
+            <p className="mt-2 max-w-4xl text-sm text-ink-muted">{description}</p>
+          ) : null}
+          {meta ? <div className="mt-3 flex flex-wrap items-center gap-2">{meta}</div> : null}
+        </div>
+        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+      </div>
+    </header>
+  );
+}
+
+export type MetricView = {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  tone?: "neutral" | "accent" | "danger" | "warn" | "success";
+};
+
+export function MetricStrip({ metrics, className }: { metrics: MetricView[]; className?: string }) {
+  return (
+    <div className={cn("grid grid-cols-2 gap-3 lg:grid-cols-5", className)}>
+      {metrics.map((metric) => (
+        <Stat
+          key={String(metric.label)}
+          label={metric.label}
+          value={metric.value}
+          hint={metric.hint}
+          tone={metric.tone}
+        />
+      ))}
+    </div>
+  );
+}
+
+export type WorkflowStageView = {
+  label: string;
+  detail?: ReactNode;
+  status: "done" | "running" | "waiting" | "empty" | "blocked";
+  href?: string;
+};
+
+export function WorkflowStepper({ stages }: { stages: WorkflowStageView[] }) {
+  return (
+    <ol className="divide-y divide-surface-border">
+      {stages.map((stage, index) => {
+        const icon =
+          stage.status === "done"
+            ? "check-circle"
+            : stage.status === "blocked"
+              ? "error"
+              : stage.status === "running"
+                ? "upload"
+                : "arrow-right";
+        const tone =
+          stage.status === "done"
+            ? "text-success"
+            : stage.status === "blocked"
+              ? "text-danger"
+              : stage.status === "running"
+                ? "text-accent"
+                : "text-ink-subtle";
+        const content = (
+          <span className="flex w-full items-center gap-3 px-4 py-4 text-left">
+            <span className="font-mono text-xs text-ink-subtle">
+              {String(index + 1).padStart(2, "0")}
+            </span>
+            <BrandIcon name={icon} className={cn("h-5 w-5", tone)} />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-ink">{stage.label}</span>
+              {stage.detail ? (
+                <span className="mt-0.5 block text-xs text-ink-muted">{stage.detail}</span>
+              ) : null}
+            </span>
+            {stage.href ? <BrandIcon name="arrow" className="h-4 w-4 text-ink-muted" /> : null}
+          </span>
+        );
+        return (
+          <li key={stage.label}>
+            {stage.href ? (
+              <Link href={stage.href} className="block hover:bg-surface-sunken">
+                {content}
+              </Link>
+            ) : (
+              content
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+export type ReviewBlockerView = {
+  label: ReactNode;
+  detail?: ReactNode;
+  tone?: "warn" | "danger" | "info";
+};
+
+export function ReviewBlockerPanel({
+  blockers,
+  emptyMessage = "No blockers. This item is ready for review.",
+}: {
+  blockers: ReviewBlockerView[];
+  emptyMessage?: ReactNode;
+}) {
+  if (blockers.length === 0) {
+    return (
+      <Callout tone="success" title="Ready">
+        {emptyMessage}
+      </Callout>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-warn/40 bg-warn-soft px-3 py-3">
+      <p className="text-sm font-semibold text-ink">Review blockers</p>
+      <ul className="mt-2 space-y-2">
+        {blockers.map((blocker, index) => (
+          <li key={index} className="flex gap-2 text-sm">
+            <BrandIcon
+              name={blocker.tone === "danger" ? "error" : "arrow-right"}
+              className={cn(
+                "mt-0.5 h-4 w-4",
+                blocker.tone === "danger" ? "text-danger" : "text-warn",
+              )}
+            />
+            <span>
+              <span className="font-medium text-ink">{blocker.label}</span>
+              {blocker.detail ? (
+                <span className="block text-xs text-ink-muted">{blocker.detail}</span>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function SegmentedControl({
+  items,
+  label,
+}: {
+  label: string;
+  items: { label: string; href: string; active: boolean; icon?: BrandIconName }[];
+}) {
+  return (
+    <nav aria-label={label} className="inline-flex rounded-full border border-ink bg-surface p-1">
+      {items.map((item) => (
+        <Link
+          key={item.href}
+          href={item.href}
+          aria-current={item.active ? "page" : undefined}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
+            item.active ? "bg-ink text-white" : "text-ink hover:bg-surface-sunken",
+          )}
+        >
+          {item.icon ? <BrandIcon name={item.icon} className="h-4 w-4" /> : null}
+          {item.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+export type EvidencePeekItem = {
+  id: string;
+  claim: ReactNode;
+  quote?: ReactNode;
+  meta?: ReactNode;
+  href?: string;
+  provenance?: string;
+};
+
+export function EvidencePeek({ items, empty }: { items: EvidencePeekItem[]; empty?: ReactNode }) {
+  if (items.length === 0) {
+    return <p className="text-sm text-ink-muted">{empty ?? "No evidence attached."}</p>;
+  }
+  return (
+    <ul className="divide-y divide-surface-border rounded border border-surface-border">
+      {items.map((item) => {
+        const body = (
+          <span className="block px-3 py-2">
+            <span className="flex flex-wrap items-start justify-between gap-2">
+              <span className="text-sm font-medium text-ink">{item.claim}</span>
+              {item.provenance ? <ProvenanceBadge provenance={item.provenance} /> : null}
+            </span>
+            {item.quote ? (
+              <span className="mt-1 line-clamp-2 block text-xs italic text-ink-muted">
+                {item.quote}
+              </span>
+            ) : null}
+            {item.meta ? (
+              <span className="mt-1 block text-2xs text-ink-subtle">{item.meta}</span>
+            ) : null}
+          </span>
+        );
+        return (
+          <li key={item.id}>
+            {item.href ? (
+              <Link href={item.href} className="block hover:bg-surface-sunken">
+                {body}
+              </Link>
+            ) : (
+              body
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export type PreflightItem = {
+  label: ReactNode;
+  detail?: ReactNode;
+  ready: boolean;
+  href?: string;
+};
+
+export function PreflightChecklist({ items }: { items: PreflightItem[] }) {
+  return (
+    <ul className="divide-y divide-surface-border rounded-lg border border-surface-border bg-surface">
+      {items.map((item) => {
+        const content = (
+          <span className="flex items-start gap-3 px-4 py-3">
+            <BrandIcon
+              name={item.ready ? "check-circle" : "error"}
+              className={cn("mt-0.5 h-5 w-5", item.ready ? "text-success" : "text-warn")}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-ink">{item.label}</span>
+              {item.detail ? (
+                <span className="mt-0.5 block text-xs text-ink-muted">{item.detail}</span>
+              ) : null}
+            </span>
+            {item.href ? <BrandIcon name="arrow" className="h-4 w-4 text-ink-muted" /> : null}
+          </span>
+        );
+        return (
+          <li key={String(item.label)}>
+            {item.href ? (
+              <Link href={item.href} className="block hover:bg-surface-sunken">
+                {content}
+              </Link>
+            ) : (
+              content
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -206,7 +586,7 @@ export function Callout({
   children: ReactNode;
 }) {
   const tones = {
-    info: "border-accent/30 bg-accent-soft text-ink",
+    info: "border-information/30 bg-information-soft text-ink",
     warn: "border-warn/30 bg-warn-soft text-ink",
     danger: "border-danger/30 bg-danger-soft text-ink",
     success: "border-observed/30 bg-observed-soft text-ink",
@@ -222,7 +602,7 @@ export function Callout({
 // ── Badges ──────────────────────────────────────────────────────────────────
 
 const BADGE_BASE =
-  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide";
+  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-bold uppercase";
 
 export function Badge({
   tone = "neutral",
@@ -304,13 +684,14 @@ export function OriginBadge({ origin }: { origin: string }) {
 
 export function StatusBadge({ status }: { status: string }) {
   const tone =
-    status === "approved" || status === "succeeded" || status === "synced"
+    status === "approved" || status === "succeeded" || status === "synced" || status === "completed"
       ? "success"
       : status === "failed" || status === "rejected"
         ? "danger"
         : status === "needs_review" ||
             status === "partially_synced" ||
             status === "partially_succeeded" ||
+            status === "completed_with_warnings" ||
             status === "retrying"
           ? "warn"
           : status === "running" || status === "syncing" || status === "queued"
@@ -387,14 +768,23 @@ export function Stat({
   label,
   value,
   hint,
+  tone = "neutral",
 }: {
   label: string;
   value: ReactNode;
   hint?: ReactNode;
+  tone?: "neutral" | "accent" | "danger" | "warn" | "success";
 }) {
+  const tones = {
+    neutral: "border-surface-border",
+    accent: "border-accent",
+    danger: "border-danger",
+    warn: "border-warn",
+    success: "border-success",
+  } as const;
   return (
-    <div className="rounded-md border border-surface-border bg-surface px-3 py-2">
-      <p className="text-2xs font-medium uppercase tracking-wide text-ink-muted">{label}</p>
+    <div className={cn("rounded-lg border-t-2 bg-surface px-3 py-2 shadow-sm", tones[tone])}>
+      <p className="text-2xs font-bold uppercase text-ink-muted">{label}</p>
       <p className="mt-0.5 text-lg font-semibold tabular-nums text-ink">{value}</p>
       {hint ? <p className="text-xs text-ink-subtle">{hint}</p> : null}
     </div>
@@ -422,9 +812,7 @@ export function KeyValue({ items }: { items: { label: string; value: ReactNode }
     <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
       {items.map((item) => (
         <div key={item.label} className="min-w-0">
-          <dt className="text-2xs font-medium uppercase tracking-wide text-ink-muted">
-            {item.label}
-          </dt>
+          <dt className="text-2xs font-bold uppercase text-ink-muted">{item.label}</dt>
           <dd className="mt-0.5 break-words text-sm text-ink">{item.value}</dd>
         </div>
       ))}

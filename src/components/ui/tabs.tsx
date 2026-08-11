@@ -8,16 +8,15 @@ import { cn } from "@/lib/cn";
  * component only toggles which one is visible, so data fetching stays on the
  * server and switching tabs never re-fetches.
  */
-export function Tabs({
-  tabs,
-}: {
-  tabs: { id: string; label: string; content: ReactNode }[];
-}) {
+export function Tabs({ tabs }: { tabs: { id: string; label: string; content: ReactNode }[] }) {
   const [active, setActive] = useState(tabs[0]?.id);
 
   return (
     <div>
-      <div role="tablist" className="mb-4 flex flex-wrap gap-1 border-b border-surface-border">
+      <div
+        role="tablist"
+        className="mb-4 inline-flex max-w-full gap-1 overflow-x-auto rounded-full border border-ink bg-surface p-1"
+      >
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -26,10 +25,10 @@ export function Tabs({
             aria-selected={active === tab.id}
             onClick={() => setActive(tab.id)}
             className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+              "shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
               active === tab.id
-                ? "border-accent text-accent-ink"
-                : "border-transparent text-ink-muted hover:text-ink",
+                ? "bg-ink text-white"
+                : "text-ink-muted hover:bg-surface-sunken hover:text-ink",
             )}
           >
             {tab.label}

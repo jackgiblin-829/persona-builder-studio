@@ -8,7 +8,7 @@ export type JobRow = typeof jobs.$inferSelect;
 
 export type EnqueueOptions = {
   organizationId?: string;
-  brandId?: string;
+  projectId?: string;
   runAfter?: Date;
   maxAttempts?: number;
   /** Uniquely indexed. Enqueueing the same key twice is a no-op. */
@@ -52,7 +52,7 @@ export class PostgresJobQueue implements JobQueue {
       type,
       payload,
       organizationId: opts.organizationId ?? null,
-      brandId: opts.brandId ?? null,
+      projectId: opts.projectId ?? null,
       runAfter: opts.runAfter ?? new Date(),
       maxAttempts: opts.maxAttempts ?? 3,
       idempotencyKey: opts.idempotencyKey ?? null,

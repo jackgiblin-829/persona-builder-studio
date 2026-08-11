@@ -6,7 +6,7 @@ const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // Crockford base32, no i/l
  * Prefixed, time-sortable identifiers. 10 chars of millisecond timestamp
  * followed by 16 chars of randomness — the same construction as a ULID, but
  * rendered with a human-readable entity prefix so ids are self-describing in
- * logs, exports and Profound tags.
+ * logs and exports.
  */
 export function newId(prefix: IdPrefix): string {
   return `${prefix}_${encodeTime(Date.now())}${encodeRandom(16)}`;
@@ -34,45 +34,24 @@ export const ID_PREFIXES = {
   user: "usr",
   membership: "mem",
   session: "ses",
-  brand: "brd",
-  brandProduct: "bpr",
-  competitor: "cmp",
+  project: "prj",
   integration: "int",
   credential: "crd",
   dataSource: "src",
-  ingestionJob: "ing",
   sourceDocument: "doc",
-  evidence: "ev",
-  evidenceEmbedding: "emb",
-  evidenceNote: "evn",
-  audienceReport: "aud",
-  audienceSignal: "asg",
-  searchDataset: "sds",
-  segmentCandidate: "seg",
+  researchSignal: "sig",
+  marketResearchBrief: "mrb",
+  sparkReport: "spr",
+  sparkReportSection: "sps",
+  generationRun: "run",
   persona: "per",
   personaVersion: "pev",
-  personaField: "pfd",
+  personaVersionSignal: "pvs",
   promptSet: "pst",
   promptSetVersion: "psv",
-  prompt: "pr",
-  promptPair: "ppr",
-  profoundConnection: "pcn",
-  profoundCategoryMapping: "pcm",
-  profoundPersonaMapping: "ppm",
-  profoundPromptLink: "ppl",
-  profoundSyncJob: "psj",
-  profoundSyncItem: "psi",
-  resultSnapshot: "rsn",
-  contentOpportunity: "opp",
-  contentBrief: "brf",
-  pageAudit: "pau",
-  auditFinding: "afd",
-  pageInventory: "pgi",
-  answerCoverageEstimate: "ace",
-  modelConfiguration: "mdc",
-  promptTemplate: "tpl",
-  evaluationRun: "evr",
-  evaluationResult: "evs",
+  promptCluster: "pcl",
+  prompt: "prm",
+  promptSignalLink: "psl",
   vendorUsage: "vus",
   auditLog: "log",
   job: "job",
@@ -80,7 +59,7 @@ export const ID_PREFIXES = {
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
 
-/** URL/tag-safe slug. Used for `persona:<slug>` Profound tags — must be stable. */
+/** URL/tag-safe slug used for stable project, persona, and cluster identifiers. */
 export function slugify(input: string, maxLength = 60): string {
   const slug = input
     .normalize("NFKD")

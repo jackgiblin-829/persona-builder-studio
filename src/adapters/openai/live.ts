@@ -8,19 +8,14 @@ import {
   type OpenAIAdapter,
   type StructuredRequest,
   type StructuredResult,
-  type WebResearchRequest,
-  type WebResearchResult,
 } from "./types";
 
 /**
  * Live OpenAI adapter.
  *
- * @unverified — written from the endpoint assumptions recorded in
- * docs/integrations.md. No live call has been executed and the current official
- * documentation has not been checked in this environment. Verify the Responses
- * API request shape and the structured-output format field, record the
- * documentation date in docs/integrations.md, and run the contract test against
- * a sandbox key before enabling live mode in production.
+ * The Responses API structured-output request shape was verified against the
+ * official OpenAI documentation on 2026-08-11. Application-side Zod validation
+ * remains mandatory even when the provider enforces the JSON Schema.
  *
  * Never falls back to mock data on failure (ADR-009).
  */
@@ -75,6 +70,12 @@ export class LiveOpenAIAdapter implements OpenAIAdapter {
             strict: true,
           },
         },
+        ...(request.webSearch
+          ? {
+              tools: [{ type: "web_search" }],
+              include: ["web_search_call.action.sources"],
+            }
+          : {}),
       };
 
       const response = await this.request("/v1/responses", body, "generateStructured");
@@ -181,57 +182,6 @@ export class LiveOpenAIAdapter implements OpenAIAdapter {
       dataOrigin: "live",
       tokensIn,
       costCents: estimateCost(model, tokensIn, 0),
-    };
-  }
-
-  /**
-   * @unverified — assumed to be `tools: [{ type: "web_search" }]` on the
-   * Responses API, with citations surfaced as `url_citation` annotations on
-   * the output text. Re-verify against current OpenAI documentation before
-   * enabling live mode for deep research.
-   */
-  async webSearch(request: WebResearchRequest): Promise<WebResearchResult> {
-    const modelId = this.models.reasoning;
-
-    const body = {
-      model: modelId,
-      tools: [{ type: "web_search" }],
-      input: [
-        {
-          role: "system",
-          content:
-            "You are a market research analyst. Research the question using web search and " +
-            "summarize the findings in a few factual paragraphs. Do not fabricate sources.",
-        },
-        { role: "user", content: `${request.brandContext}\n\nResearch question: ${request.query}` },
-      ],
-    };
-
-    const response = await this.request("/v1/responses", body, "webSearch");
-    const payload = webSearchResponseEnvelope.safeParse(response);
-    if (!payload.success) {
-      throw new VendorError(
-        "openai",
-        "webSearch",
-        "Unrecognised response shape from the Responses API (web_search).",
-        { retryable: false },
-      );
-    }
-
-    const findings = extractOutputText(payload.data) ?? "";
-    const citations = extractCitations(payload.data);
-    const usage = payload.data.usage;
-
-    return {
-      findings,
-      citations,
-      modelProvider: "openai",
-      modelId: payload.data.model ?? modelId,
-      dataOrigin: "live",
-      tokensIn: usage?.input_tokens ?? 0,
-      tokensOut: usage?.output_tokens ?? 0,
-      costCents: estimateCost(modelId, usage?.input_tokens ?? 0, usage?.output_tokens ?? 0),
-      raw: response as Record<string, unknown>,
     };
   }
 
@@ -343,54 +293,6 @@ function extractOutputText(payload: z.infer<typeof responseEnvelope>): string | 
     }
   }
   return null;
-}
-
-const citationAnnotationSchema = z.object({
-  type: z.string().optional(),
-  url: z.string().optional(),
-  title: z.string().optional(),
-});
-
-const webSearchResponseEnvelope = z.object({
-  model: z.string().optional(),
-  output_text: z.string().optional(),
-  output: z
-    .array(
-      z.object({
-        type: z.string().optional(),
-        content: z
-          .array(
-            z.object({
-              type: z.string().optional(),
-              text: z.string().optional(),
-              annotations: z.array(citationAnnotationSchema).optional(),
-            }),
-          )
-          .optional(),
-      }),
-    )
-    .optional(),
-  usage: z
-    .object({ input_tokens: z.number().optional(), output_tokens: z.number().optional() })
-    .optional(),
-});
-
-function extractCitations(
-  payload: z.infer<typeof webSearchResponseEnvelope>,
-): { url: string; title: string | null }[] {
-  const citations: { url: string; title: string | null }[] = [];
-  const seen = new Set<string>();
-  for (const item of payload.output ?? []) {
-    for (const content of item.content ?? []) {
-      for (const annotation of content.annotations ?? []) {
-        if (annotation.type !== "url_citation" || !annotation.url) continue;
-        if (seen.has(annotation.url)) continue;
-        seen.add(annotation.url);
-        citations.push({ url: annotation.url, title: annotation.title ?? null });
-      }
-    }
-  }
-  return citations;
 }
 
 const embeddingEnvelope = z.object({

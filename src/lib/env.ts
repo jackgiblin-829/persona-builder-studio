@@ -52,23 +52,11 @@ const schema = z.object({
   OPENAI_MODEL_EMBEDDING: z.string().default("text-embedding-3-small"),
   OPENAI_EMBEDDING_DIMENSIONS: intFrom(1536),
 
-  PROFOUND_MODE: vendorMode,
-  PROFOUND_API_KEY: z.string().optional(),
-  PROFOUND_BASE_URL: z.string().default("https://api.tryprofound.com"),
-
   SPARKTORO_MODE: vendorMode,
   SPARKTORO_API_KEY: z.string().optional(),
   SPARKTORO_BASE_URL: z.string().default("https://api.sparktoro.com"),
 
-  DATAFORSEO_MODE: vendorMode,
-  DATAFORSEO_LOGIN: z.string().optional(),
-  DATAFORSEO_PASSWORD: z.string().optional(),
-  DATAFORSEO_BASE_URL: z.string().default("https://api.dataforseo.com"),
-
   MAX_UPLOAD_BYTES: intFrom(26_214_400),
-  CRAWL_MAX_PAGES: intFrom(50),
-  CRAWL_MAX_BYTES_PER_PAGE: intFrom(2_097_152),
-  CRAWL_REQUESTS_PER_SECOND: intFrom(1),
 
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });

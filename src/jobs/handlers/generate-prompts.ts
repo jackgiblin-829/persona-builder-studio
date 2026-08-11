@@ -1,605 +1,816 @@
 import "server-only";
-import { and, asc, desc, eq, max, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, max } from "drizzle-orm";
+import { cosineSimilarity, getOpenAIAdapter, type OpenAIAdapter } from "@/adapters/openai";
+import {
+  buildCoverageBlueprint,
+  strategyReadiness,
+  TOPIC_CLASSES,
+  TOPIC_CLASS_LABELS,
+  type CoverageCell,
+  type PromptStrategy,
+} from "@/contracts/prompt-strategy";
 import { db } from "@/db/client";
 import {
-  competitors,
-  evidenceRecords,
-  personaFieldEvidence,
-  personaFields,
-  personaVersions,
+  generatedPrompts,
+  generationRuns,
+  marketResearchBriefs,
   personas,
-  promptEvidence,
-  promptPairs,
-  promptSetVersions,
+  personaVersions,
+  projects,
+  promptClusters,
   promptSets,
-  prompts,
+  promptSetVersions,
+  promptSignalLinks,
+  researchSignals,
+  type PromptRubricScores,
 } from "@/db/schema";
-import { getOpenAIAdapter } from "@/adapters/openai";
-import { getQueue } from "@/adapters/queue";
+import { sha256 } from "@/lib/crypto";
 import { AppError } from "@/lib/errors";
-import { newId, slugify, ID_PREFIXES } from "@/lib/ids";
-import { dedupeExact, promptHash } from "@/lib/prompt-dedupe";
-import { buildPromptMetadata } from "@/lib/profound-tags";
-import { PROMPT_GENERATION, renderTemplate } from "@/prompts/registry";
-import { promptGenerationSchema, SCHEMA_VERSION } from "@/prompts/schemas";
+import { ID_PREFIXES, newId, slugify } from "@/lib/ids";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
+import { PROMPT_GENERATION, PROMPT_QUALITY_EVALUATION, renderTemplate } from "@/prompts/registry";
+import {
+  promptCandidateLibrarySchema,
+  promptQualityEvaluationSchema,
+  SCHEMA_VERSION,
+  type PromptCandidateLibrary,
+  type PromptLibraryGeneration,
+  type PromptQualityEvaluation,
+} from "@/prompts/schemas";
 import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
-import { loadBrandContext } from "./ingest-source";
 
-/**
- * Prompt generation for one approved persona version (§17).
- *
- * Three invariants are enforced here rather than trusted to the model:
- *
- * 1. **Citation integrity.** A prompt may only cite evidence that is actually
- *    attached to the persona version it was generated from. Anything else is
- *    dropped and counted; a prompt left with no verifiable citation is not
- *    stored at all, because an uncited prompt is exactly the brand-keyword
- *    guess the product exists to prevent.
- * 2. **No forced brand insertion.** A generated prompt whose text names the
- *    target brand is rejected. §17 forbids inserting the brand to improve its
- *    own measured visibility, and a rule the application enforces is worth more
- *    than a line in a system prompt.
- * 3. **A new version every time.** Regenerating never modifies an existing
- *    prompt-set version; the prompt set is a stable identity and the version is
- *    new, so an approved version is untouchable (§33).
- */
+const QUALITY_THRESHOLD = 80;
+const SEMANTIC_DUPLICATE_THRESHOLD = 0.86;
+const MAX_REPAIR_ROUNDS = 2;
+
+export type ActivePersona = {
+  persona: typeof personas.$inferSelect;
+  version: typeof personaVersions.$inferSelect;
+};
+type Candidate = PromptCandidateLibrary["candidates"][number];
+type Assessment = PromptQualityEvaluation["assessments"][number];
+export type EvaluatedPrompt = {
+  candidate: Candidate;
+  scores: PromptRubricScores;
+  explanation: string;
+  hardFailures: string[];
+  maximumSimilarity: number;
+};
+type SelectedPrompt = EvaluatedPrompt & {
+  reviewStatus: "ready" | "needs_revision";
+};
+
 registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
-  const brandId = String(job.payload.brandId ?? "");
-  const personaVersionId = String(job.payload.personaVersionId ?? "");
-  const requestedByUserId = job.payload.requestedByUserId
-    ? String(job.payload.requestedByUserId)
-    : null;
-
-  if (!brandId || !personaVersionId) {
-    throw new AppError("validation", "generate_prompts requires brandId and personaVersionId");
+  const runId = String(job.payload.runId ?? "");
+  const personaIds = Array.isArray(job.payload.personaIds)
+    ? job.payload.personaIds.filter((value): value is string => typeof value === "string")
+    : [];
+  if (!runId || !personaIds.length) {
+    throw new AppError("validation", "generate_prompts requires runId and personaIds");
   }
+  const [run] = await db.select().from(generationRuns).where(eq(generationRuns.id, runId)).limit(1);
+  if (!run) throw new AppError("not_found", "Generation run no longer exists");
+  const [project] = await db.select().from(projects).where(eq(projects.id, run.projectId)).limit(1);
+  if (!project) throw new AppError("not_found", "Project no longer exists");
 
-  const brand = await loadBrandContext(brandId);
-
-  const [version] = await db
-    .select()
-    .from(personaVersions)
-    .where(and(eq(personaVersions.id, personaVersionId), eq(personaVersions.brandId, brandId)))
-    .limit(1);
-  if (!version) throw new AppError("not_found", "The persona version no longer exists.");
-  if (version.status !== "approved") {
-    throw new AppError(
-      "validation",
-      "Prompts are generated from an approved persona version only — an unapproved persona would put unreviewed claims into a tracked prompt set.",
+  await updateRun(runId, {
+    status: "running",
+    stage: "creating_clusters",
+    progress: 5,
+    startedAt: new Date(),
+    errorMessage: null,
+  });
+  try {
+    const active = await db
+      .select({ persona: personas, version: personaVersions })
+      .from(personas)
+      .innerJoin(personaVersions, eq(personaVersions.id, personas.currentVersionId))
+      .where(
+        and(
+          eq(personas.projectId, project.id),
+          inArray(personas.id, personaIds),
+          isNull(personas.archivedAt),
+        ),
+      );
+    if (active.length !== personaIds.length) {
+      throw new AppError("conflict", "One or more personas changed before generation started.");
+    }
+    const [brief] = await db
+      .select()
+      .from(marketResearchBriefs)
+      .where(
+        and(
+          eq(marketResearchBriefs.projectId, project.id),
+          eq(marketResearchBriefs.status, "approved"),
+        ),
+      )
+      .orderBy(desc(marketResearchBriefs.version))
+      .limit(1);
+    if (!brief) {
+      throw new AppError(
+        "validation",
+        "Approve a market research brief before generating prompts.",
+      );
+    }
+    if (project.promptStrategyEdited) {
+      throw new AppError(
+        "validation",
+        "The prompt strategy changed after research approval. Refresh and approve the market brief.",
+      );
+    }
+    const strategy = brief.content.strategy;
+    const readiness = strategyReadiness(strategy);
+    if (!readiness.ready) {
+      throw new AppError("validation", `Complete the strategy: ${readiness.blockers.join(" ")}`);
+    }
+    const blueprint = buildCoverageBlueprint(
+      strategy,
+      active.map((item) => ({ slug: item.persona.slug, name: item.version.name })),
     );
-  }
+    validateArchetypeDistribution(blueprint);
 
-  const [persona] = await db
-    .select()
-    .from(personas)
-    .where(eq(personas.id, version.personaId))
-    .limit(1);
-  if (!persona) throw new AppError("not_found", "The persona no longer exists.");
+    const signals = await db
+      .select()
+      .from(researchSignals)
+      .where(eq(researchSignals.projectId, project.id));
+    const allowedSignalIds = new Set(signals.map((signal) => signal.id));
+    if (!allowedSignalIds.size) {
+      throw new AppError("validation", "Prompt generation requires uploaded-source signals.");
+    }
 
-  // Fields plus the evidence each one actually cites and that is still
-  // available. A field whose source was deleted contributes no evidence ids, so
-  // it cannot seed a prompt.
-  const fieldRows = await db
-    .select()
-    .from(personaFields)
-    .where(eq(personaFields.personaVersionId, personaVersionId))
-    .orderBy(asc(personaFields.sequence));
-
-  const citationRows = await db
-    .select({
-      personaFieldId: personaFieldEvidence.personaFieldId,
-      relation: personaFieldEvidence.relation,
-      unavailable: personaFieldEvidence.unavailable,
-      evidenceId: evidenceRecords.id,
-      claim: evidenceRecords.normalizedClaim,
-      category: evidenceRecords.category,
-      sourceType: evidenceRecords.sourceType,
-      journeyStage: evidenceRecords.journeyStage,
-      entities: evidenceRecords.entities,
-      vocabulary: evidenceRecords.vocabulary,
-      availability: evidenceRecords.availability,
-      observedAt: evidenceRecords.observedAt,
-      ingestedAt: evidenceRecords.ingestedAt,
-    })
-    .from(personaFieldEvidence)
-    .innerJoin(evidenceRecords, eq(evidenceRecords.id, personaFieldEvidence.evidenceId))
-    .innerJoin(personaFields, eq(personaFields.id, personaFieldEvidence.personaFieldId))
-    .where(eq(personaFields.personaVersionId, personaVersionId))
-    .orderBy(asc(evidenceRecords.id));
-
-  const usable = citationRows.filter(
-    (row) => row.relation === "supports" && !row.unavailable && row.availability === "available",
-  );
-
-  const evidenceByField = new Map<string, string[]>();
-  for (const row of usable) {
-    const list = evidenceByField.get(row.personaFieldId) ?? [];
-    if (!list.includes(row.evidenceId)) list.push(row.evidenceId);
-    evidenceByField.set(row.personaFieldId, list);
-  }
-
-  const evidenceById = new Map<string, (typeof usable)[number]>();
-  for (const row of usable)
-    if (!evidenceById.has(row.evidenceId)) evidenceById.set(row.evidenceId, row);
-
-  const suppliedEvidenceIds = new Set(evidenceById.keys());
-  if (suppliedEvidenceIds.size === 0) {
-    throw new AppError(
-      "validation",
-      "This persona version has no available supporting evidence left, so no prompt could be traced to anything. Review the persona before generating prompts.",
-    );
-  }
-
-  const evidenceCutoff = [...evidenceById.values()].reduce<Date>((latest, row) => {
-    const stamp = row.observedAt ?? row.ingestedAt;
-    return stamp > latest ? stamp : latest;
-  }, new Date(0));
-
-  const competitorRows = await db
-    .select({ name: competitors.name })
-    .from(competitors)
-    .where(eq(competitors.brandId, brandId));
-
-  // Prompts already tracked for this brand under a different persona, so the
-  // generator can avoid restating them and the dedupe pass has something to
-  // compare against.
-  const existingPrompts = await db
-    .select({ text: prompts.promptText })
-    .from(prompts)
-    .where(and(eq(prompts.brandId, brandId), ne(prompts.personaVersionId, personaVersionId)))
-    .limit(300);
-
-  const mockFields = fieldRows.map((field) => ({
-    id: field.id,
-    fieldType: field.fieldType as string,
-    statement: field.statement,
-    evidenceIds: evidenceByField.get(field.id) ?? [],
-    insufficientEvidence: field.insufficientEvidence || field.markedUnsupported,
-    confidence: field.confidence,
-  }));
-
-  const { adapter, mode } = await getOpenAIAdapter(brand.organizationId);
-  const jsonSchema = toStrictJsonSchema(promptGenerationSchema, "PromptGeneration");
-
-  const result = await withVendorUsage(
-    {
-      organizationId: brand.organizationId,
-      brandId,
-      vendor: "openai",
-      operation: "prompt_generation",
+    const { adapter, mode } = await getOpenAIAdapter(project.organizationId);
+    const context = {
+      project,
+      strategy,
+      brief,
+      active,
+      signals,
+      adapter,
       mode,
       jobId: job.id,
+    };
+    await updateRun(runId, { stage: "creating_prompts", progress: 25 });
+    let selected = selectBestByCell(
+      await generateAndEvaluate(context, blueprint, [], "initial"),
+      blueprint,
+    );
+
+    for (let round = 1; round <= MAX_REPAIR_ROUNDS; round++) {
+      selected = applyLibraryFailures(selected, blueprint);
+      const failedKeys = selected
+        .filter((prompt) => !passesQuality(prompt))
+        .map((prompt) => prompt.candidate.plan_key);
+      if (!failedKeys.length) break;
+      await updateRun(runId, {
+        stage: "validating",
+        progress: 45 + round * 18,
+        warnings: [
+          ...run.warnings,
+          `Repair round ${round}: ${failedKeys.length} coverage cells below the quality gate.`,
+        ],
+      });
+      const failedCells = blueprint.filter((cell) => failedKeys.includes(cell.key));
+      const fixed = selected.filter((prompt) => !failedKeys.includes(prompt.candidate.plan_key));
+      const repaired = selectBestByCell(
+        await generateAndEvaluate(context, failedCells, fixed, `repair_${round}`),
+        failedCells,
+      );
+      const repairedByKey = new Map(repaired.map((prompt) => [prompt.candidate.plan_key, prompt]));
+      selected = selected.map((prompt) => repairedByKey.get(prompt.candidate.plan_key) ?? prompt);
+    }
+
+    const finalized: SelectedPrompt[] = applyLibraryFailures(selected, blueprint).map((prompt) => ({
+      ...prompt,
+      reviewStatus: passesQuality(prompt) ? "ready" : "needs_revision",
+    }));
+    await updateRun(runId, { stage: "validating", progress: 88 });
+    const versionIds = await persistPromptLibraryAtomically(project, runId, {
+      active,
+      strategy,
+      blueprint,
+      selected: finalized,
+      researchBriefId: brief.id,
+      modelProvider: finalized[0]?.candidate ? "openai" : mode,
+      modelId: mode === "mock" ? "mock:quality-pipeline" : "responses-api",
+      dataOrigin: mode,
+    });
+    const needsRevision = finalized.filter(
+      (prompt) => prompt.reviewStatus === "needs_revision",
+    ).length;
+    await updateRun(runId, {
+      status: needsRevision ? "completed_with_warnings" : "completed",
+      stage: "ready",
+      progress: 100,
+      warnings: needsRevision
+        ? [`${needsRevision} prompts need revision before the library can be exported.`]
+        : [],
+      resultingVersionIds: versionIds,
+      finishedAt: new Date(),
+    });
+    return {
+      status: needsRevision ? "partially_succeeded" : "succeeded",
+      result: { promptSetVersionIds: versionIds, needsRevision },
+    };
+  } catch (error) {
+    await updateRun(runId, {
+      status: "failed",
+      progress: 100,
+      errorMessage: error instanceof Error ? error.message.slice(0, 3000) : String(error),
+      finishedAt: new Date(),
+    });
+    throw error;
+  }
+});
+
+export async function generateAndEvaluate(
+  context: {
+    project: typeof projects.$inferSelect;
+    strategy: PromptStrategy;
+    brief: typeof marketResearchBriefs.$inferSelect;
+    active: ActivePersona[];
+    signals: (typeof researchSignals.$inferSelect)[];
+    adapter: OpenAIAdapter;
+    mode: "mock" | "live";
+    jobId: string;
+  },
+  cells: CoverageCell[],
+  fixed: EvaluatedPrompt[],
+  operation: string,
+) {
+  const projectContext = JSON.stringify({
+    name: context.project.name,
+    domain: context.project.canonicalDomain,
+    description: context.project.description,
+    market: context.project.primaryMarket,
+    locale: context.project.languageLocale,
+    promptStrategy: context.strategy,
+  });
+  const personaContext = JSON.stringify(
+    context.active.map((item) => ({
+      slug: item.persona.slug,
+      name: item.version.name,
+      description: item.version.description,
+      profile: item.version.profile,
+    })),
+  );
+  const signalContext = JSON.stringify(
+    context.signals.map((signal) => ({
+      id: signal.id,
+      category: signal.category,
+      text: signal.displayText,
+      confidence: signal.confidence,
+      provenance: signal.provenance,
+    })),
+  );
+  const generated = await withVendorUsage(
+    {
+      organizationId: context.project.organizationId,
+      projectId: context.project.id,
+      vendor: "openai",
+      operation: `prompt_candidates_${operation}`,
+      mode: context.mode,
+      jobId: context.jobId,
     },
     () =>
-      adapter.generateStructured({
+      context.adapter.generateStructured({
         templateId: PROMPT_GENERATION.id,
         templateVersion: PROMPT_GENERATION.version,
         schemaVersion: SCHEMA_VERSION,
         system: PROMPT_GENERATION.system,
         user: renderTemplate(PROMPT_GENERATION, {
-          persona: renderPersona(brand, version, fieldRows, evidenceByField),
-          retrieved_evidence: [...evidenceById.values()]
-            .map((row) => `[${row.evidenceId}] (${row.category}) ${row.claim}`)
-            .join("\n"),
-          sparktoro_signals: "",
-          seo_signals: "",
-          existing_prompts: existingPrompts.map((row) => row.text).join("\n"),
+          project_context: projectContext,
+          market_brief: JSON.stringify(context.brief.content),
+          persona_profiles: personaContext,
+          coverage_blueprint: JSON.stringify(cells),
+          research_signals: signalContext,
         }),
-        schema: promptGenerationSchema,
-        schemaName: "PromptGeneration",
-        jsonSchema,
+        schema: promptCandidateLibrarySchema,
+        schemaName: "GroundedPromptCandidateLibrary",
+        jsonSchema: toStrictJsonSchema(
+          promptCandidateLibrarySchema,
+          "GroundedPromptCandidateLibrary",
+        ),
         modelTier: PROMPT_GENERATION.modelTier,
         mockContext: {
-          brandName: brand.name,
-          brandDescription: brand.description,
-          competitorNames: competitorRows.map((row) => row.name),
-          personaName: version.name,
-          segmentDefinition: version.segmentDefinition,
-          fields: mockFields,
-          evidence: [...evidenceById.values()].map((row) => ({
-            id: row.evidenceId,
-            claim: row.claim,
-            category: row.category,
-            sourceType: row.sourceType,
-            journeyStage: row.journeyStage,
-            entities: row.entities,
-            vocabulary: row.vocabulary,
+          strategy: context.strategy,
+          blueprint: cells,
+          personaNames: Object.fromEntries(
+            context.active.map((item) => [item.persona.slug, item.version.name]),
+          ),
+          signals: context.signals.map((signal) => ({
+            id: signal.id,
+            category: signal.category,
+            displayText: signal.displayText,
           })),
-          existingPromptTexts: existingPrompts.map((row) => row.text),
+          factIds: context.brief.content.facts.map((fact) => fact.id),
         },
       }),
-    (generationResult) => ({
-      retryCount: generationResult.attempts - 1,
-      tokensIn: generationResult.tokensIn,
-      tokensOut: generationResult.tokensOut,
-      costCents: generationResult.costCents,
+    (value) => ({
+      retryCount: value.attempts - 1,
+      tokensIn: value.tokensIn,
+      tokensOut: value.tokensOut,
+      costCents: value.costCents,
     }),
   );
-
-  // ── Validate before storing ───────────────────────────────────────────────
-
-  const fieldsByStatement = new Map<string, string>();
-  for (const field of fieldRows) {
-    fieldsByStatement.set(normalizeStatement(field.statement), field.id);
-  }
-
-  let droppedCitations = 0;
-  let rejectedForBrand = 0;
-  let rejectedUncited = 0;
-
-  const accepted = result.data.prompts.filter((prompt) => {
-    if (mentionsBrand(prompt.prompt_text, brand.name) || mentionsBrand(prompt.topic, brand.name)) {
-      rejectedForBrand++;
-      return false;
-    }
-
-    const validIds = prompt.evidence_ids.filter((id) => suppliedEvidenceIds.has(id));
-    droppedCitations += prompt.evidence_ids.length - validIds.length;
-    prompt.evidence_ids = [...new Set(validIds)];
-
-    if (prompt.evidence_ids.length === 0) {
-      rejectedUncited++;
-      return false;
-    }
-    return true;
-  });
-
-  if (accepted.length === 0) {
-    throw new AppError(
-      "validation",
-      "No generated prompt survived the citation and brand-insertion checks, so nothing was stored. Re-run generation, or review the persona's evidence.",
-    );
-  }
-
-  const { kept, dropped } = dedupeExact(
-    accepted.map((prompt) => ({ prompt, promptText: prompt.prompt_text })),
-  );
-
-  // ── Prompt-set identity and the new version ───────────────────────────────
-
-  let promptSetId = "";
-  const [existingSet] = await db
-    .select({ id: promptSets.id })
-    .from(promptSets)
-    .where(and(eq(promptSets.brandId, brandId), eq(promptSets.personaId, persona.id)))
-    .limit(1);
-  promptSetId = existingSet?.id ?? "";
-
-  const setName = `${version.name} prompt set`;
-
-  if (!promptSetId) {
-    const taken = new Set(
-      (
-        await db
-          .select({ slug: promptSets.slug })
-          .from(promptSets)
-          .where(eq(promptSets.brandId, brandId))
-      ).map((row) => row.slug),
-    );
-    // The slug feeds `prompt-set:<slug>` tags in Profound, so it is derived from
-    // the persona's stable slug rather than the version's display name.
-    let slug = slugify(`${persona.slug}-prompts`);
-    let suffix = 2;
-    while (taken.has(slug)) slug = slugify(`${persona.slug}-prompts-${suffix++}`);
-
-    promptSetId = newId(ID_PREFIXES.promptSet);
-    await db.insert(promptSets).values({
-      id: promptSetId,
-      organizationId: brand.organizationId,
-      brandId,
-      personaId: persona.id,
-      name: setName,
-      slug,
-    });
-  }
-
-  const [setRow] = await db
-    .select()
-    .from(promptSets)
-    .where(eq(promptSets.id, promptSetId))
-    .limit(1);
-  if (!setRow) throw new AppError("internal", "The prompt set could not be loaded after creation.");
-
-  const [maxRow] = await db
-    .select({ n: max(promptSetVersions.version) })
-    .from(promptSetVersions)
-    .where(eq(promptSetVersions.promptSetId, promptSetId));
-  const nextVersion = (maxRow?.n ?? 0) + 1;
-
-  const [previous] = await db
-    .select({ id: promptSetVersions.id, version: promptSetVersions.version })
-    .from(promptSetVersions)
-    .where(eq(promptSetVersions.promptSetId, promptSetId))
-    .orderBy(desc(promptSetVersions.version))
-    .limit(1);
-
-  const setVersionId = newId(ID_PREFIXES.promptSetVersion);
-  let personaPromptCount = 0;
-  let controlCount = 0;
-
-  await db.transaction(async (tx) => {
-    await tx.insert(promptSetVersions).values({
-      id: setVersionId,
-      organizationId: brand.organizationId,
-      brandId,
-      promptSetId,
-      personaVersionId,
-      version: nextVersion,
-      status: "draft",
-      modelProvider: result.modelProvider,
-      modelId: result.modelId,
-      promptTemplateVersion: PROMPT_GENERATION.version,
-      schemaVersion: SCHEMA_VERSION,
-      dataOrigin: result.dataOrigin,
-      evidenceCutoff,
-      generatedByUserId: requestedByUserId,
-      parentVersionId: previous?.id ?? null,
-      changeSummary: previous
-        ? `Regenerated from persona version ${version.version}; prompt-set version ${previous.version} kept unchanged.`
-        : `First generation from persona version ${version.version} (${suppliedEvidenceIds.size} cited evidence record(s)).`,
-    });
-
-    // Controls are shared: two persona prompts that reduce to the same generic
-    // question should be paired to one control row, not two, so the control's
-    // measured visibility is not double-counted.
-    const controlIdByHash = new Map<string, string>();
-
-    for (const item of kept) {
-      const generated = item.prompt;
-      const personaFieldIds = personaFieldIdsFor(generated, fieldsByStatement);
-
-      const promptId = newId(ID_PREFIXES.prompt);
-      await tx.insert(prompts).values({
-        id: promptId,
-        organizationId: brand.organizationId,
-        brandId,
-        promptSetVersionId: setVersionId,
-        personaId: persona.id,
-        personaVersionId,
-        promptType: "persona",
-        topic: generated.topic,
-        promptText: generated.prompt_text,
-        normalizedHash: item.normalizedHash,
-        informationNeed: generated.information_need,
-        intent: generated.intent,
-        journeyStage: generated.journey_stage,
-        constraintsUsed: generated.constraints_used,
-        decisionCriteriaUsed: generated.decision_criteria_used,
-        vocabularyUsed: generated.vocabulary_used,
-        personaFieldIds,
-        expectedAnswerElements: generated.expected_answer_elements,
-        inclusionRationale: generated.inclusion_rationale,
-        confidence: generated.confidence,
-        trackingPriority: generated.tracking_priority,
-        executionMode: generated.execution_mode,
-        reviewStatus: "pending_review",
-        profoundMetadata: buildPromptMetadata({
-          personaSlug: persona.slug,
-          personaVersion: version.version,
-          promptSetSlug: setRow.slug,
-          promptSetVersion: nextVersion,
-          intent: generated.intent,
-          journeyStage: generated.journey_stage,
-          promptType: "persona",
-          promptText: generated.prompt_text,
-          topic: generated.topic,
-          languages: brand.languages,
-          regions: brand.regions,
-        }) as unknown as Record<string, unknown>,
-        dataOrigin: result.dataOrigin,
-      });
-      personaPromptCount++;
-
-      for (const evidenceId of generated.evidence_ids) {
-        await tx
-          .insert(promptEvidence)
-          .values({
-            id: newId(ID_PREFIXES.prompt),
-            organizationId: brand.organizationId,
-            promptId,
-            evidenceId,
-          })
-          .onConflictDoNothing();
-      }
-
-      const controlText = generated.generic_control_prompt?.trim();
-      if (!controlText) continue;
-
-      const controlHash = promptHash(controlText);
-      let controlId = controlIdByHash.get(controlHash);
-
-      if (!controlId) {
-        controlId = newId(ID_PREFIXES.prompt);
-        await tx.insert(prompts).values({
-          id: controlId,
-          organizationId: brand.organizationId,
-          brandId,
-          promptSetVersionId: setVersionId,
-          personaId: persona.id,
-          personaVersionId,
-          promptType: "generic_control",
-          topic: generated.topic,
-          promptText: controlText,
-          normalizedHash: controlHash,
-          informationNeed: `Generic control for: ${generated.information_need}`,
-          intent: generated.intent,
-          journeyStage: generated.journey_stage,
-          constraintsUsed: [],
-          decisionCriteriaUsed: [],
-          vocabularyUsed: [],
-          personaFieldIds: [],
-          expectedAnswerElements: generated.expected_answer_elements,
-          inclusionRationale:
-            "The same question with the persona's qualifier removed. It exists to isolate the persona framing: if the persona prompt does not outperform it, the hypothesis failed rather than the content.",
-          confidence: generated.confidence,
-          trackingPriority: generated.tracking_priority,
-          executionMode: generated.execution_mode,
-          reviewStatus: "pending_review",
-          profoundMetadata: buildPromptMetadata({
-            personaSlug: persona.slug,
-            personaVersion: version.version,
-            promptSetSlug: setRow.slug,
-            promptSetVersion: nextVersion,
-            intent: generated.intent,
-            journeyStage: generated.journey_stage,
-            promptType: "generic_control",
-            promptText: controlText,
-            topic: generated.topic,
-            languages: brand.languages,
-            regions: brand.regions,
-          }) as unknown as Record<string, unknown>,
-          dataOrigin: result.dataOrigin,
-        });
-        controlIdByHash.set(controlHash, controlId);
-        controlCount++;
-      }
-
-      await tx
-        .insert(promptPairs)
-        .values({
-          id: newId(ID_PREFIXES.promptPair),
-          organizationId: brand.organizationId,
-          promptSetVersionId: setVersionId,
-          personaPromptId: promptId,
-          controlPromptId: controlId,
-          rationale:
-            "The control is the persona prompt with its qualifying clause removed, so the difference between them is the persona framing and nothing else.",
-        })
-        .onConflictDoNothing();
-    }
-
-    await tx
-      .update(promptSetVersions)
-      .set({ promptCount: personaPromptCount, controlCount, updatedAt: new Date() })
-      .where(eq(promptSetVersions.id, setVersionId));
-
-    await tx
-      .update(promptSets)
-      .set({ currentVersionId: setVersionId, name: setName, updatedAt: new Date() })
-      .where(eq(promptSets.id, promptSetId));
-  });
-
-  // Embedding drives semantic near-duplicate detection (§18). Queued rather
-  // than inlined so a slow embedding call cannot fail the generation that has
-  // already succeeded.
-  await getQueue().enqueue(
-    JOB_TYPES.embedPrompts,
-    { brandId, promptSetVersionId: setVersionId },
-    { organizationId: brand.organizationId, brandId },
-  );
-
-  const partial = droppedCitations > 0 || rejectedForBrand > 0 || rejectedUncited > 0;
-
-  return {
-    status: partial ? "partially_succeeded" : "succeeded",
-    result: {
-      promptSetId,
-      promptSetVersionId: setVersionId,
-      version: nextVersion,
-      personaPrompts: personaPromptCount,
-      controls: controlCount,
-      generated: result.data.prompts.length,
-      droppedCitations,
-      rejectedForBrandInsertion: rejectedForBrand,
-      rejectedUncited,
-      droppedExactDuplicates: dropped.length,
-      modelId: result.modelId,
-      dataOrigin: result.dataOrigin,
+  validateCandidateCoverage(generated.data.candidates, cells);
+  const candidateTexts = generated.data.candidates.map((candidate) => candidate.prompt_text);
+  const fixedTexts = fixed.map((prompt) => prompt.candidate.prompt_text);
+  const embedded = await withVendorUsage(
+    {
+      organizationId: context.project.organizationId,
+      projectId: context.project.id,
+      vendor: "openai",
+      operation: `prompt_similarity_${operation}`,
+      mode: context.mode,
+      jobId: context.jobId,
     },
-  };
-});
-
-/**
- * A prompt names the target brand.
- *
- * Word-boundary matched on the full name and on its first word when that word
- * is distinctive, so "Northwind Analytics" and a bare "Northwind" are both
- * caught, but a brand called "Analytics Co" does not blacklist the word
- * "analytics" for every prompt in the set.
- */
-export function mentionsBrand(text: string, brandName: string): boolean {
-  const name = brandName.trim();
-  if (name.length < 3) return false;
-
-  const patterns = [name];
-  const firstWord = name.split(/\s+/)[0];
-  if (firstWord && firstWord.length >= 5 && !GENERIC_BRAND_WORDS.has(firstWord.toLowerCase())) {
-    patterns.push(firstWord);
-  }
-
-  return patterns.some((pattern) =>
-    new RegExp(`\\b${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text),
+    () => context.adapter.embed({ texts: [...candidateTexts, ...fixedTexts] }),
+    (value) => ({ tokensIn: value.tokensIn, costCents: value.costCents }),
   );
-}
-
-/** Words too common to treat as a brand mention on their own. */
-const GENERIC_BRAND_WORDS = new Set([
-  "analytics",
-  "software",
-  "systems",
-  "platform",
-  "digital",
-  "global",
-  "technologies",
-  "solutions",
-  "services",
-  "insights",
-  "metrics",
-  "data",
-  "cloud",
-]);
-
-/** Resolves the persona fields a prompt cites, by statement match. */
-function personaFieldIdsFor(
-  prompt: { constraints_used: string[]; decision_criteria_used: string[] },
-  byStatement: Map<string, string>,
-): string[] {
-  const ids = new Set<string>();
-  for (const statement of [...prompt.constraints_used, ...prompt.decision_criteria_used]) {
-    const id = byStatement.get(normalizeStatement(statement));
-    if (id) ids.add(id);
+  const candidateVectors = embedded.embeddings.slice(0, candidateTexts.length);
+  const maximumSimilarities = candidateVectors.map((vector, index) => {
+    const candidate = generated.data.candidates[index]!;
+    let maximum = 0;
+    for (let other = 0; other < embedded.embeddings.length; other++) {
+      if (other === index) continue;
+      if (
+        other < generated.data.candidates.length &&
+        generated.data.candidates[other]!.plan_key === candidate.plan_key
+      ) {
+        continue;
+      }
+      maximum = Math.max(maximum, cosineSimilarity(vector, embedded.embeddings[other]!));
+    }
+    return maximum;
+  });
+  const evaluationInput = generated.data.candidates.map((candidate, index) => ({
+    ...candidate,
+    coverage_cell: cells.find((cell) => cell.key === candidate.plan_key),
+    maximum_semantic_similarity: maximumSimilarities[index],
+  }));
+  const evaluated = await withVendorUsage(
+    {
+      organizationId: context.project.organizationId,
+      projectId: context.project.id,
+      vendor: "openai",
+      operation: `prompt_quality_${operation}`,
+      mode: context.mode,
+      jobId: context.jobId,
+    },
+    () =>
+      context.adapter.generateStructured({
+        templateId: PROMPT_QUALITY_EVALUATION.id,
+        templateVersion: PROMPT_QUALITY_EVALUATION.version,
+        schemaVersion: SCHEMA_VERSION,
+        system: PROMPT_QUALITY_EVALUATION.system,
+        user: renderTemplate(PROMPT_QUALITY_EVALUATION, {
+          project_context: JSON.stringify({
+            strategy: context.strategy,
+            marketBrief: context.brief.content,
+          }),
+          candidates: JSON.stringify(evaluationInput),
+        }),
+        schema: promptQualityEvaluationSchema,
+        schemaName: "PromptCandidateQualityEvaluation",
+        jsonSchema: toStrictJsonSchema(
+          promptQualityEvaluationSchema,
+          "PromptCandidateQualityEvaluation",
+        ),
+        modelTier: PROMPT_QUALITY_EVALUATION.modelTier,
+        mockContext: { candidates: evaluationInput },
+      }),
+    (value) => ({
+      retryCount: value.attempts - 1,
+      tokensIn: value.tokensIn,
+      tokensOut: value.tokensOut,
+      costCents: value.costCents,
+    }),
+  );
+  const assessmentMap = new Map(
+    evaluated.data.assessments.map((assessment) => [assessment.candidate_key, assessment]),
+  );
+  if (assessmentMap.size !== generated.data.candidates.length) {
+    throw new AppError("schema_validation", "The evaluator did not score every candidate.");
   }
-  return [...ids];
+  const allowedSignalIds = new Set(context.signals.map((signal) => signal.id));
+  const allowedFactIds = new Set(context.brief.content.facts.map((fact) => fact.id));
+  return generated.data.candidates.map((candidate, index) => {
+    const assessment = assessmentMap.get(candidate.candidate_key)!;
+    const cell = cells.find((item) => item.key === candidate.plan_key)!;
+    const scores = scoresFromAssessment(assessment);
+    return {
+      candidate,
+      scores,
+      explanation: assessment.explanation,
+      hardFailures: [
+        ...assessment.hard_fail_reasons,
+        ...deterministicFailures(
+          candidate,
+          cell,
+          context.strategy,
+          allowedSignalIds,
+          allowedFactIds,
+        ),
+      ],
+      maximumSimilarity: maximumSimilarities[index] ?? 0,
+    };
+  });
 }
 
-function normalizeStatement(statement: string): string {
-  return statement
+function scoresFromAssessment(assessment: Assessment): PromptRubricScores {
+  const scores = {
+    categorySpecificity: assessment.category_specificity,
+    personaQualifierFit: assessment.persona_qualifier_fit,
+    naturalBuyerLanguage: assessment.natural_buyer_language,
+    measurementValue: assessment.measurement_value,
+    researchSupport: assessment.research_support,
+    distinctiveness: assessment.distinctiveness,
+    metadataCompleteness: assessment.metadata_completeness,
+  };
+  return { ...scores, total: Object.values(scores).reduce((sum, value) => sum + value, 0) };
+}
+
+function validateCandidateCoverage(candidates: Candidate[], cells: CoverageCell[]) {
+  if (candidates.length !== cells.length * 2) {
+    throw new AppError(
+      "schema_validation",
+      `Expected ${cells.length * 2} prompt candidates, received ${candidates.length}.`,
+    );
+  }
+  for (const cell of cells) {
+    const rows = candidates.filter((candidate) => candidate.plan_key === cell.key);
+    if (rows.length !== 2 || new Set(rows.map((row) => row.candidate_key)).size !== 2) {
+      throw new AppError("schema_validation", `Coverage cell ${cell.key} needs two candidates.`);
+    }
+  }
+}
+
+export function selectBestByCell(evaluated: EvaluatedPrompt[], cells: CoverageCell[]) {
+  return cells.map((cell) => {
+    const options = evaluated
+      .filter((prompt) => prompt.candidate.plan_key === cell.key)
+      .sort(
+        (a, b) =>
+          Number(a.hardFailures.length > 0) - Number(b.hardFailures.length > 0) ||
+          b.scores.total - a.scores.total ||
+          a.maximumSimilarity - b.maximumSimilarity,
+      );
+    if (!options[0]) throw new AppError("schema_validation", `No candidate for ${cell.key}.`);
+    return options[0];
+  });
+}
+
+export function applyLibraryFailures(selected: EvaluatedPrompt[], blueprint: CoverageCell[]) {
+  const failures = new Map<string, string[]>();
+  const addFailure = (key: string, message: string) =>
+    failures.set(key, [...(failures.get(key) ?? []), message]);
+  const normalized = new Map<string, string>();
+  selected.forEach((prompt) => {
+    const value = normalizePromptText(prompt.candidate.prompt_text);
+    const duplicate = normalized.get(value);
+    if (duplicate) addFailure(prompt.candidate.plan_key, `Exact duplicate of ${duplicate}.`);
+    else normalized.set(value, prompt.candidate.plan_key);
+  });
+  const openings = new Map<string, EvaluatedPrompt[]>();
+  for (const prompt of selected) {
+    if (prompt.maximumSimilarity >= SEMANTIC_DUPLICATE_THRESHOLD) {
+      addFailure(
+        prompt.candidate.plan_key,
+        `Embedding similarity ${prompt.maximumSimilarity.toFixed(3)} exceeds ${SEMANTIC_DUPLICATE_THRESHOLD}.`,
+      );
+    }
+    const opening = normalizePromptText(prompt.candidate.prompt_text)
+      .split(" ")
+      .slice(0, 4)
+      .join(" ");
+    openings.set(opening, [...(openings.get(opening) ?? []), prompt]);
+  }
+  const openingLimit = Math.max(2, Math.ceil(blueprint.length * 0.1));
+  for (const rows of openings.values()) {
+    rows
+      .sort((a, b) => b.scores.total - a.scores.total)
+      .slice(openingLimit)
+      .forEach((prompt) => addFailure(prompt.candidate.plan_key, "Repeated sentence opening."));
+  }
+  for (let left = 0; left < selected.length; left++) {
+    for (let right = left + 1; right < selected.length; right++) {
+      const a = selected[left]!;
+      const b = selected[right]!;
+      if (semanticSimilarity(a.candidate.prompt_text, b.candidate.prompt_text) >= 0.9) {
+        const weaker = a.scores.total <= b.scores.total ? a : b;
+        addFailure(weaker.candidate.plan_key, "Near-duplicate wording in the selected library.");
+      }
+    }
+  }
+  return selected.map((prompt) => ({
+    ...prompt,
+    hardFailures: [
+      ...new Set([...prompt.hardFailures, ...(failures.get(prompt.candidate.plan_key) ?? [])]),
+    ],
+  }));
+}
+
+function validateArchetypeDistribution(blueprint: CoverageCell[]) {
+  const counts = new Map<string, number>();
+  blueprint.forEach((cell) =>
+    counts.set(cell.questionArchetype, (counts.get(cell.questionArchetype) ?? 0) + 1),
+  );
+  const maximum = Math.ceil(blueprint.length * 0.2);
+  if ([...counts.values()].some((count) => count > maximum)) {
+    throw new AppError("validation", "One question archetype exceeds 20% of the library.");
+  }
+}
+
+export function passesQuality(prompt: EvaluatedPrompt) {
+  return prompt.scores.total >= QUALITY_THRESHOLD && prompt.hardFailures.length === 0;
+}
+
+export function normalizePromptText(value: string) {
+  return value
+    .normalize("NFKC")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function renderPersona(
-  brand: { name: string; description: string; canonicalDomain: string },
-  version: {
-    name: string;
-    segmentDefinition: string;
-    summary: string | null;
-    journeyStages: string[];
-  },
-  fields: (typeof personaFields.$inferSelect)[],
-  evidenceByField: Map<string, string[]>,
-): string {
-  const lines = [
-    `Brand context (for market vocabulary only — never insert the brand name into a prompt):`,
-    `${brand.name} (${brand.canonicalDomain}) — ${brand.description}`,
-    "",
-    `Persona: ${version.name}`,
-    `Segment: ${version.segmentDefinition}`,
-    version.summary ? `Summary: ${version.summary}` : "",
-    `Journey stages: ${version.journeyStages.join(", ") || "unknown"}`,
-    "",
-    "Fields (only fields with evidence ids may seed a prompt):",
-  ];
+function tokenSet(value: string) {
+  return new Set(
+    normalizePromptText(value)
+      .split(" ")
+      .filter((token) => token.length > 2),
+  );
+}
 
-  for (const field of fields) {
-    const ids = evidenceByField.get(field.id) ?? [];
-    if (field.insufficientEvidence || field.markedUnsupported || ids.length === 0) continue;
-    lines.push(`- [${field.fieldType}] ${field.statement} (evidence: ${ids.join(", ")})`);
+export function semanticSimilarity(left: string, right: string) {
+  const a = tokenSet(left);
+  const b = tokenSet(right);
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const token of a) if (b.has(token)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+function includesTerm(text: string, term: string) {
+  const normalizedTerm = normalizePromptText(term);
+  return normalizedTerm.length >= 2 && text.includes(normalizedTerm);
+}
+
+function qualifierCoverage(text: string, qualifier: string) {
+  const tokens = [...tokenSet(qualifier)];
+  if (!tokens.length) return true;
+  return tokens.filter((token) => text.includes(token)).length / tokens.length >= 0.6;
+}
+
+function deterministicFailures(
+  prompt: Candidate,
+  cell: CoverageCell,
+  strategy: PromptStrategy,
+  allowedSignalIds: Set<string>,
+  allowedFactIds: Set<string>,
+) {
+  const failures: string[] = [];
+  const text = normalizePromptText(prompt.prompt_text);
+  const brandTerms = [strategy.canonicalBrand, ...strategy.aliases].filter(Boolean);
+  const disambiguators = [
+    strategy.parentCompany,
+    ...strategy.aliases,
+    ...strategy.entityCollisions,
+  ].filter(Boolean);
+  if (prompt.signal_ids.some((id) => !allowedSignalIds.has(id)))
+    failures.push("Unknown signal ID.");
+  if (prompt.research_fact_ids.some((id) => !allowedFactIds.has(id))) {
+    failures.push("Unknown research fact ID.");
   }
+  if (!prompt.signal_ids.length || !prompt.research_fact_ids.length) {
+    failures.push("Missing research support.");
+  }
+  if (text.includes("when fit evidence risk and implementation effort all matter")) {
+    failures.push("Banned boilerplate.");
+  }
+  const mentionsBrand = brandTerms.some((term) => includesTerm(text, term));
+  if (cell.promptType === "unbranded" && mentionsBrand) failures.push("Brand leakage.");
+  if (cell.promptType !== "unbranded" && !includesTerm(text, strategy.canonicalBrand)) {
+    failures.push("Missing canonical brand.");
+  }
+  if (cell.promptType === "competitor_comparative" && !includesTerm(text, cell.competitor)) {
+    failures.push("Missing assigned competitor.");
+  }
+  if (
+    cell.promptType === "entity_disambiguation" &&
+    disambiguators.length &&
+    !disambiguators.some((term) => includesTerm(text, term))
+  ) {
+    failures.push("Missing disambiguating entity.");
+  }
+  if (!includesTerm(text, cell.businessLine)) failures.push("Missing business-line meaning.");
+  if (cell.buyerQualifier && !qualifierCoverage(text, cell.buyerQualifier)) {
+    failures.push("Missing buyer qualifier.");
+  }
+  return failures;
+}
 
-  return lines.filter(Boolean).join("\n");
+// Retained as a strict utility for regression tests and imported libraries.
+export function validatePromptLibrary(
+  output: PromptLibraryGeneration,
+  blueprint: CoverageCell[],
+  allowedSignalIds: Set<string>,
+  strategy: PromptStrategy,
+) {
+  if (output.prompts.length !== blueprint.length) {
+    throw new AppError("schema_validation", `Expected ${blueprint.length} prompts.`);
+  }
+  const seen = new Set<string>();
+  const normalized = new Set<string>();
+  for (const prompt of output.prompts) {
+    const cell = blueprint.find((item) => item.key === prompt.plan_key);
+    if (!cell || seen.has(prompt.plan_key))
+      throw new AppError("schema_validation", "Invalid plan key.");
+    seen.add(prompt.plan_key);
+    const text = normalizePromptText(prompt.prompt_text);
+    if (normalized.has(text)) throw new AppError("schema_validation", "Exact duplicate prompt.");
+    normalized.add(text);
+    const failures = deterministicFailures(
+      { ...prompt, candidate_key: `${prompt.plan_key}-a`, research_fact_ids: ["fact-001"] },
+      cell,
+      strategy,
+      allowedSignalIds,
+      new Set(["fact-001"]),
+    );
+    if (failures.length) throw new AppError("schema_validation", failures.join(" "));
+  }
+}
+
+function namedEntities(cell: CoverageCell, strategy: PromptStrategy) {
+  if (cell.promptType === "competitor_comparative")
+    return [strategy.canonicalBrand, cell.competitor];
+  if (cell.promptType === "branded" || cell.promptType === "entity_disambiguation") {
+    return [strategy.canonicalBrand];
+  }
+  return [];
+}
+
+function qualitySummary(selected: SelectedPrompt[]) {
+  const ready = selected.filter((prompt) => prompt.reviewStatus === "ready");
+  const average = selected.length
+    ? selected.reduce((sum, prompt) => sum + prompt.scores.total, 0) / selected.length
+    : 0;
+  return {
+    promptCount: selected.length,
+    readyCount: ready.length,
+    needsRevisionCount: selected.length - ready.length,
+    averageQualityScore: Math.round(average * 10) / 10,
+    minimumQualityScore: Math.min(...selected.map((prompt) => prompt.scores.total)),
+    qualityThreshold: QUALITY_THRESHOLD,
+    passed: ready.length === selected.length,
+  };
+}
+
+async function persistPromptLibraryAtomically(
+  project: typeof projects.$inferSelect,
+  runId: string,
+  built: {
+    active: ActivePersona[];
+    strategy: PromptStrategy;
+    blueprint: CoverageCell[];
+    selected: SelectedPrompt[];
+    researchBriefId: string;
+    modelProvider: string;
+    modelId: string;
+    dataOrigin: "mock" | "live";
+  },
+) {
+  const versionIds: string[] = [];
+  const outputByKey = new Map(built.selected.map((prompt) => [prompt.candidate.plan_key, prompt]));
+  await db.transaction(async (tx) => {
+    for (const item of built.active) {
+      const personaCells = built.blueprint.filter((cell) => cell.personaSlug === item.persona.slug);
+      if (!personaCells.length) continue;
+      let [set] = await tx
+        .select()
+        .from(promptSets)
+        .where(eq(promptSets.personaId, item.persona.id))
+        .limit(1);
+      if (!set) {
+        [set] = await tx
+          .insert(promptSets)
+          .values({
+            id: newId(ID_PREFIXES.promptSet),
+            organizationId: project.organizationId,
+            projectId: project.id,
+            personaId: item.persona.id,
+          })
+          .returning();
+      }
+      if (!set) throw new AppError("internal", "Could not create prompt set");
+      const [latest] = await tx
+        .select({ value: max(promptSetVersions.version) })
+        .from(promptSetVersions)
+        .where(eq(promptSetVersions.promptSetId, set.id));
+      const topicGroups = TOPIC_CLASSES.map((topic) => ({
+        topic,
+        cells: personaCells.filter((cell) => cell.topicClass === topic),
+      })).filter((group) => group.cells.length > 0);
+      const versionId = newId(ID_PREFIXES.promptSetVersion);
+      await tx.insert(promptSetVersions).values({
+        id: versionId,
+        organizationId: project.organizationId,
+        projectId: project.id,
+        promptSetId: set.id,
+        personaVersionId: item.version.id,
+        generationRunId: runId,
+        version: (latest?.value ?? 0) + 1,
+        clusterCount: topicGroups.length,
+        promptCount: personaCells.length,
+        modelProvider: built.modelProvider,
+        modelId: built.modelId,
+        dataOrigin: built.dataOrigin,
+        researchBriefId: built.researchBriefId,
+        strategySnapshot: built.strategy,
+        qualitySummary: qualitySummary(personaCells.map((cell) => outputByKey.get(cell.key)!)),
+      });
+
+      for (let groupIndex = 0; groupIndex < topicGroups.length; groupIndex++) {
+        const group = topicGroups[groupIndex]!;
+        const clusterId = newId(ID_PREFIXES.promptCluster);
+        const groupPrompts = group.cells.map((cell) => outputByKey.get(cell.key)!);
+        const groupSignalIds = [
+          ...new Set(groupPrompts.flatMap((prompt) => prompt.candidate.signal_ids)),
+        ];
+        await tx.insert(promptClusters).values({
+          id: clusterId,
+          organizationId: project.organizationId,
+          projectId: project.id,
+          promptSetVersionId: versionId,
+          personaVersionId: item.version.id,
+          sequence: groupIndex,
+          title: TOPIC_CLASS_LABELS[group.topic],
+          slug: slugify(group.topic),
+          seedTopic: group.topic,
+          informationNeed: `${item.version.name} needs ${group.cells.length} distinct prompts covering ${TOPIC_CLASS_LABELS[group.topic].toLowerCase()}.`,
+          rationale: "This cluster comes from the approved research brief and coverage blueprint.",
+          signalIds: groupSignalIds,
+        });
+
+        for (let promptIndex = 0; promptIndex < group.cells.length; promptIndex++) {
+          const cell = group.cells[promptIndex]!;
+          const selected = outputByKey.get(cell.key)!;
+          const prompt = selected.candidate;
+          const promptId = newId(ID_PREFIXES.prompt);
+          await tx.insert(generatedPrompts).values({
+            id: promptId,
+            organizationId: project.organizationId,
+            projectId: project.id,
+            promptSetVersionId: versionId,
+            clusterId,
+            personaVersionId: item.version.id,
+            sequence: promptIndex,
+            coverageKey: cell.key,
+            promptText: prompt.prompt_text,
+            normalizedHash: sha256(normalizePromptText(prompt.prompt_text)),
+            geoCategory: cell.geoCategory,
+            topicClass: cell.topicClass,
+            promptType: cell.promptType,
+            questionArchetype: cell.questionArchetype,
+            intent: prompt.intent,
+            journeyStage: cell.funnelStage,
+            businessLine: cell.businessLine,
+            signalTracked: cell.signalTracked,
+            buyerQualifier: cell.buyerQualifier,
+            namedEntities: namedEntities(cell, built.strategy),
+            qualityScore: selected.scores.total,
+            rubricScores: selected.scores,
+            evaluatorExplanation: [selected.explanation, ...selected.hardFailures].join(" "),
+            researchFactIds: prompt.research_fact_ids,
+            maximumSimilarity: selected.maximumSimilarity,
+            reviewStatus: selected.reviewStatus,
+            expectedAnswerElements: prompt.expected_answer_elements,
+            signalIds: prompt.signal_ids,
+          });
+          for (const signalId of [...new Set(prompt.signal_ids)]) {
+            await tx.insert(promptSignalLinks).values({
+              id: newId(ID_PREFIXES.promptSignalLink),
+              organizationId: project.organizationId,
+              promptId,
+              signalId,
+            });
+          }
+        }
+      }
+      await tx
+        .update(promptSets)
+        .set({ currentVersionId: versionId, updatedAt: new Date() })
+        .where(eq(promptSets.id, set.id));
+      versionIds.push(versionId);
+    }
+  });
+  return versionIds;
+}
+
+async function updateRun(id: string, values: Partial<typeof generationRuns.$inferInsert>) {
+  await db
+    .update(generationRuns)
+    .set({ ...values, updatedAt: new Date() })
+    .where(eq(generationRuns.id, id));
 }

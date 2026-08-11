@@ -35,17 +35,13 @@ export const logger = pino({
     censor: "[redacted]",
   },
   base: { service: "persona-builder-studio" },
-  transport:
-    env.NODE_ENV === "development" && !env.isTest
-      ? { target: "pino/file", options: { destination: 1 } }
-      : undefined,
 });
 
 /** The fixed field set required by §38. */
 export type VendorLogFields = {
   jobId?: string;
   organizationId?: string;
-  brandId?: string;
+  projectId?: string;
   vendor: string;
   operation: string;
   mode: "live" | "mock";
@@ -68,7 +64,7 @@ export type JobLogFields = {
   jobId: string;
   jobType: string;
   organizationId?: string;
-  brandId?: string;
+  projectId?: string;
   attempt: number;
   durationMs?: number;
   outcome: "started" | "succeeded" | "failed" | "retrying" | "partially_succeeded";

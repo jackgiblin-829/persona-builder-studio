@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Persona Builder Studio",
   description:
-    "Evidence-backed persona and prompt strategy layer for Profound. Personas are testable hypotheses, not real people.",
+    "Build evidence-backed personas and GEO query-fanout prompt sets from research and SparkToro.",
   robots: { index: false, follow: false },
 };
 

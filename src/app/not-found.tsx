@@ -7,8 +7,8 @@ export default function NotFound() {
       <p className="text-sm text-ink-muted">
         The page you asked for does not exist, or you do not have access to it.
       </p>
-      <Link href="/" className="text-sm font-medium text-accent hover:underline">
-        Back to your brands
+      <Link href="/projects" className="text-sm font-medium text-accent hover:underline">
+        Back to projects
       </Link>
     </main>
   );

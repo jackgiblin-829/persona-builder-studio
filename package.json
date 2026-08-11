@@ -2,7 +2,7 @@
   "name": "persona-builder-studio",
   "version": "0.1.0",
   "private": true,
-  "description": "Evidence-backed persona and prompt strategy layer for Profound",
+  "description": "Project-based persona and GEO prompt generation studio",
   "engines": {
     "node": ">=20.11.0"
   },
@@ -20,12 +20,11 @@
     "db:reset": "NODE_OPTIONS=--conditions=react-server tsx scripts/reset-db.ts",
     "db:seed": "NODE_OPTIONS=--conditions=react-server tsx scripts/seed.ts",
     "db:setup": "npm run db:migrate && npm run db:seed",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
+    "test:integration": "npm run db:reset -- --test && npm run db:migrate -- --test && vitest run tests/integration",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "evals": "NODE_OPTIONS=--conditions=react-server tsx scripts/run-evals.ts",
+    "test:e2e": "npm run db:reset -- --test && npm run db:migrate -- --test && npm run db:seed -- --test && playwright test",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {
@@ -71,6 +70,7 @@
     "tailwindcss": "^3.4.18",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2",
+    "vite": "^6.1.0",
     "vitest": "^3.2.4"
   }
 }
