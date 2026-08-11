@@ -17,7 +17,6 @@ export default defineConfig({
     conditions: ["react-server", "node", "import", "default"],
     alias: {
       "@": resolve(__dirname, "src"),
-      "@fixtures": resolve(__dirname, "fixtures"),
       "server-only": resolve(__dirname, "tests/stubs/server-only.ts"),
     },
   },

@@ -10,49 +10,30 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 
 export { cn };
-export { Tabs } from "./tabs";
 
 // ── 829 brand icons ─────────────────────────────────────────────────────────
 
 export type BrandIconName =
   | "arrow"
-  | "arrow-left"
   | "arrow-right"
-  | "arrow-external"
-  | "chev-left"
-  | "chev-right"
-  | "search"
-  | "filter"
   | "upload"
-  | "check"
   | "check-circle"
   | "close"
   | "error"
   | "list"
   | "grid"
-  | "menu"
-  | "nav-down"
-  | "cancel";
+  | "menu";
 
 const BRAND_ICON_PATHS: Record<BrandIconName, string> = {
   arrow: "/icons/829/arrow.svg",
-  "arrow-left": "/icons/829/arrow-left.svg",
   "arrow-right": "/icons/829/arrow-right.svg",
-  "arrow-external": "/icons/829/arrow-external.svg",
-  "chev-left": "/icons/829/chev-left.svg",
-  "chev-right": "/icons/829/chev-right.svg",
-  search: "/icons/829/search.svg",
-  filter: "/icons/829/filter.svg",
   upload: "/icons/829/upload.svg",
-  check: "/icons/829/check.svg",
   "check-circle": "/icons/829/check-circle.svg",
   close: "/icons/829/close.svg",
   error: "/icons/829/error.svg",
   list: "/icons/829/list.svg",
   grid: "/icons/829/grid.svg",
   menu: "/icons/829/menu.svg",
-  "nav-down": "/icons/829/nav-down.svg",
-  cancel: "/icons/829/cancel.svg",
 };
 
 export function BrandIcon({
@@ -173,26 +154,6 @@ export function IconButton({
   );
 }
 
-/**
- * A control the product deliberately does not yet support. Rendered disabled
- * with the reason — never a button that looks functional and does nothing.
- */
-export function UnavailableControl({ label, reason }: { label: string; reason: string }) {
-  return (
-    <span
-      className={cn(
-        BUTTON_BASE,
-        BUTTON_SIZES.sm,
-        "cursor-not-allowed border border-dashed border-surface-border text-ink-subtle",
-      )}
-      title={reason}
-      aria-disabled="true"
-    >
-      {label} — unavailable
-    </span>
-  );
-}
-
 // ── Layout ──────────────────────────────────────────────────────────────────
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
@@ -239,38 +200,6 @@ export function PageHeader({
           {description ? (
             <p className="mt-1 max-w-3xl text-sm text-ink-muted">{description}</p>
           ) : null}
-        </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
-      </div>
-    </header>
-  );
-}
-
-export function PageToolbar({
-  eyebrow,
-  title,
-  description,
-  actions,
-  meta,
-}: {
-  eyebrow?: ReactNode;
-  title: ReactNode;
-  description?: ReactNode;
-  actions?: ReactNode;
-  meta?: ReactNode;
-}) {
-  return (
-    <header className="mb-5 rounded-lg border border-surface-border bg-surface px-4 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          {eyebrow ? (
-            <p className="mb-1 text-xs font-bold uppercase text-ink-muted">{eyebrow}</p>
-          ) : null}
-          <h1 className="text-2xl font-medium leading-tight text-ink">{title}</h1>
-          {description ? (
-            <p className="mt-2 max-w-4xl text-sm text-ink-muted">{description}</p>
-          ) : null}
-          {meta ? <div className="mt-3 flex flex-wrap items-center gap-2">{meta}</div> : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
@@ -359,169 +288,6 @@ export function WorkflowStepper({ stages }: { stages: WorkflowStageView[] }) {
   );
 }
 
-export type ReviewBlockerView = {
-  label: ReactNode;
-  detail?: ReactNode;
-  tone?: "warn" | "danger" | "info";
-};
-
-export function ReviewBlockerPanel({
-  blockers,
-  emptyMessage = "No blockers. This item is ready for review.",
-}: {
-  blockers: ReviewBlockerView[];
-  emptyMessage?: ReactNode;
-}) {
-  if (blockers.length === 0) {
-    return (
-      <Callout tone="success" title="Ready">
-        {emptyMessage}
-      </Callout>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-warn/40 bg-warn-soft px-3 py-3">
-      <p className="text-sm font-semibold text-ink">Review blockers</p>
-      <ul className="mt-2 space-y-2">
-        {blockers.map((blocker, index) => (
-          <li key={index} className="flex gap-2 text-sm">
-            <BrandIcon
-              name={blocker.tone === "danger" ? "error" : "arrow-right"}
-              className={cn(
-                "mt-0.5 h-4 w-4",
-                blocker.tone === "danger" ? "text-danger" : "text-warn",
-              )}
-            />
-            <span>
-              <span className="font-medium text-ink">{blocker.label}</span>
-              {blocker.detail ? (
-                <span className="block text-xs text-ink-muted">{blocker.detail}</span>
-              ) : null}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-export function SegmentedControl({
-  items,
-  label,
-}: {
-  label: string;
-  items: { label: string; href: string; active: boolean; icon?: BrandIconName }[];
-}) {
-  return (
-    <nav aria-label={label} className="inline-flex rounded-full border border-ink bg-surface p-1">
-      {items.map((item) => (
-        <Link
-          key={item.href}
-          href={item.href}
-          aria-current={item.active ? "page" : undefined}
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors",
-            item.active ? "bg-ink text-white" : "text-ink hover:bg-surface-sunken",
-          )}
-        >
-          {item.icon ? <BrandIcon name={item.icon} className="h-4 w-4" /> : null}
-          {item.label}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-
-export type EvidencePeekItem = {
-  id: string;
-  claim: ReactNode;
-  quote?: ReactNode;
-  meta?: ReactNode;
-  href?: string;
-  provenance?: string;
-};
-
-export function EvidencePeek({ items, empty }: { items: EvidencePeekItem[]; empty?: ReactNode }) {
-  if (items.length === 0) {
-    return <p className="text-sm text-ink-muted">{empty ?? "No evidence attached."}</p>;
-  }
-  return (
-    <ul className="divide-y divide-surface-border rounded border border-surface-border">
-      {items.map((item) => {
-        const body = (
-          <span className="block px-3 py-2">
-            <span className="flex flex-wrap items-start justify-between gap-2">
-              <span className="text-sm font-medium text-ink">{item.claim}</span>
-              {item.provenance ? <ProvenanceBadge provenance={item.provenance} /> : null}
-            </span>
-            {item.quote ? (
-              <span className="mt-1 line-clamp-2 block text-xs italic text-ink-muted">
-                {item.quote}
-              </span>
-            ) : null}
-            {item.meta ? (
-              <span className="mt-1 block text-2xs text-ink-subtle">{item.meta}</span>
-            ) : null}
-          </span>
-        );
-        return (
-          <li key={item.id}>
-            {item.href ? (
-              <Link href={item.href} className="block hover:bg-surface-sunken">
-                {body}
-              </Link>
-            ) : (
-              body
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-export type PreflightItem = {
-  label: ReactNode;
-  detail?: ReactNode;
-  ready: boolean;
-  href?: string;
-};
-
-export function PreflightChecklist({ items }: { items: PreflightItem[] }) {
-  return (
-    <ul className="divide-y divide-surface-border rounded-lg border border-surface-border bg-surface">
-      {items.map((item) => {
-        const content = (
-          <span className="flex items-start gap-3 px-4 py-3">
-            <BrandIcon
-              name={item.ready ? "check-circle" : "error"}
-              className={cn("mt-0.5 h-5 w-5", item.ready ? "text-success" : "text-warn")}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-ink">{item.label}</span>
-              {item.detail ? (
-                <span className="mt-0.5 block text-xs text-ink-muted">{item.detail}</span>
-              ) : null}
-            </span>
-            {item.href ? <BrandIcon name="arrow" className="h-4 w-4 text-ink-muted" /> : null}
-          </span>
-        );
-        return (
-          <li key={String(item.label)}>
-            {item.href ? (
-              <Link href={item.href} className="block hover:bg-surface-sunken">
-                {content}
-              </Link>
-            ) : (
-              content
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 // ── State displays ──────────────────────────────────────────────────────────
 
 export function EmptyState({
@@ -559,19 +325,6 @@ export function ErrorState({
       <p className="text-sm font-semibold text-danger">{title}</p>
       <p className="text-sm text-ink">{message}</p>
       {action}
-    </div>
-  );
-}
-
-export function LoadingState({ label = "Loading…" }: { label?: string }) {
-  return (
-    <div
-      className="flex items-center gap-2 px-4 py-10 text-sm text-ink-muted"
-      role="status"
-      aria-live="polite"
-    >
-      <span className="h-3 w-3 animate-pulse rounded-full bg-accent" aria-hidden />
-      {label}
     </div>
   );
 }
@@ -628,57 +381,6 @@ export function Badge({
     <span className={cn(BADGE_BASE, tones[tone])} title={title}>
       {children}
     </span>
-  );
-}
-
-/** Provenance is a first-class visual. Never render a claim without it. */
-export function ProvenanceBadge({ provenance }: { provenance: string }) {
-  switch (provenance) {
-    case "observed":
-      return (
-        <Badge tone="observed" title="Directly stated or observed in first-party evidence">
-          Observed
-        </Badge>
-      );
-    case "externally_supported":
-      return (
-        <Badge tone="external" title="Supported by aggregated external audience or search data">
-          External
-        </Badge>
-      );
-    case "brand_assertion":
-      return (
-        <Badge tone="warn" title="The brand's own claim about itself, not customer belief">
-          Brand claim
-        </Badge>
-      );
-    default:
-      return (
-        <Badge tone="inferred" title="Synthesised by a model from evidence — a hypothesis">
-          Inferred
-        </Badge>
-      );
-  }
-}
-
-/** Where a value came from. Mock data is always visibly mock. */
-export function OriginBadge({ origin }: { origin: string }) {
-  if (origin === "live")
-    return (
-      <Badge tone="success" title="Retrieved from a live vendor API">
-        Live
-      </Badge>
-    );
-  if (origin === "local")
-    return (
-      <Badge tone="accent" title="Calculated by this application, not a vendor">
-        Local
-      </Badge>
-    );
-  return (
-    <Badge tone="warn" title="Deterministic mock data — not from a live vendor API">
-      Mock
-    </Badge>
   );
 }
 
@@ -742,26 +444,6 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cn("input", props.className)} />;
 }
 
-export function Checkbox({
-  label,
-  hint,
-  ...props
-}: InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: string }) {
-  return (
-    <label className="flex items-start gap-2 text-sm">
-      <input
-        type="checkbox"
-        {...props}
-        className="mt-0.5 h-4 w-4 rounded border-surface-border text-accent focus:ring-accent"
-      />
-      <span>
-        <span className="font-medium text-ink">{label}</span>
-        {hint ? <span className="block text-xs text-ink-muted">{hint}</span> : null}
-      </span>
-    </label>
-  );
-}
-
 // ── Misc ────────────────────────────────────────────────────────────────────
 
 export function Stat({
@@ -803,46 +485,6 @@ export function ConfidenceBar({ value }: { value: number }) {
         <span className={cn("block h-full rounded-full", tone)} style={{ width: `${pct}%` }} />
       </span>
       <span className="text-xs tabular-nums text-ink-muted">{pct.toFixed(0)}</span>
-    </span>
-  );
-}
-
-export function KeyValue({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-      {items.map((item) => (
-        <div key={item.label} className="min-w-0">
-          <dt className="text-2xs font-bold uppercase text-ink-muted">{item.label}</dt>
-          <dd className="mt-0.5 break-words text-sm text-ink">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-export function Chips({
-  values,
-  tone = "neutral",
-}: {
-  values: string[];
-  tone?: "neutral" | "accent";
-}) {
-  if (values.length === 0) return <span className="text-sm text-ink-subtle">—</span>;
-  return (
-    <span className="flex flex-wrap gap-1">
-      {values.map((value) => (
-        <span
-          key={value}
-          className={cn(
-            "rounded px-1.5 py-0.5 text-xs",
-            tone === "accent"
-              ? "bg-accent-soft text-accent-ink"
-              : "bg-surface-sunken text-ink-muted",
-          )}
-        >
-          {value}
-        </span>
-      ))}
     </span>
   );
 }
