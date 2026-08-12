@@ -35,23 +35,31 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
     <>
       <PageHeader
         title="Personas"
-        description="Traditional persona profiles with SparkToro audience distributions, evidence references, and immutable edit history."
+        description="Review the audiences that will become the foundation of your SEO and GEO prompt strategy."
         breadcrumb={`${summary.project.name} / Personas`}
         actions={
-          canEdit ? (
-            <ActionForm
-              action={generatePersonasAction}
-              csrfToken={csrfToken}
-              hidden={{ projectId }}
-              className="space-y-0"
-            >
-              <SubmitButton
-                label={items.length ? "Regenerate personas" : "Generate personas"}
-                pendingLabel="Starting…"
-                disabled={summary.completedSourceCount === 0}
-              />
-            </ActionForm>
-          ) : null
+          <div className="flex flex-wrap gap-2">
+            {canEdit ? (
+              <ActionForm
+                action={generatePersonasAction}
+                csrfToken={csrfToken}
+                hidden={{ projectId }}
+                className="space-y-0"
+              >
+                <SubmitButton
+                  label={items.length ? "Refresh personas" : "Build personas"}
+                  pendingLabel="Building personas…"
+                  disabled={summary.sources.length === 0}
+                  variant="secondary"
+                />
+              </ActionForm>
+            ) : null}
+            {items.length ? (
+              <ButtonLink href={`/projects/${projectId}/prompts`} variant="primary">
+                Build Query Funnels
+              </ButtonLink>
+            ) : null}
+          </div>
         }
       />
       {summary.newDataAvailable ? (
@@ -77,6 +85,13 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
           </Callout>
         </div>
       ) : null}
+      {latest?.status === "completed_with_warnings" && latest.warnings.length ? (
+        <div className="mb-4">
+          <Callout tone="warn" title="Personas built with evidence cleanup">
+            {latest.warnings.join(" ")}
+          </Callout>
+        </div>
+      ) : null}
       <MetricStrip
         className="mb-5"
         metrics={[
@@ -90,7 +105,7 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
         <Card>
           <EmptyState
             title="No personas yet"
-            description="Complete at least one source in Data, then use Generate personas to create an adaptive set of three to five profiles."
+            description="Add at least one brand source in Data, then build an adaptive set of three to five profiles."
             action={
               <ButtonLink href={`/projects/${projectId}/data`} variant="primary" size="sm">
                 Go to Data
@@ -116,50 +131,67 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
                 />
                 <div className="space-y-6 p-5">
                   <p className="text-sm leading-6 text-ink">{profile.summary}</p>
-                  <section>
-                    <h3 className="mb-3 text-sm font-semibold text-ink">
-                      SparkToro audience distributions
-                    </h3>
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                      <Distribution title="Age" rows={profile.demographics.age} />
-                      <Distribution title="Gender" rows={profile.demographics.gender} />
-                      <Distribution title="Income" rows={profile.demographics.income} />
-                      <Distribution title="Education" rows={profile.demographics.education} />
-                      <Distribution title="Geography" rows={profile.demographics.geography} />
-                    </div>
-                    <p className="mt-2 text-xs text-ink-subtle">
-                      These are aggregate audience distributions, not asserted characteristics of an
-                      individual.
-                    </p>
-                  </section>
                   <SectionGrid
                     sections={[
-                      ["Roles", profile.firmographics.roles],
-                      ["Seniority", profile.firmographics.seniority],
-                      ["Departments", profile.firmographics.departments],
-                      ["Industries", profile.firmographics.industries],
-                      ["Company size", profile.firmographics.companySize],
-                      ["Experience", profile.firmographics.experience],
                       ["Jobs to be done", profile.jobsToBeDone],
-                      ["Motivations", profile.motivations],
                       ["Goals", profile.goals],
                       ["Pain points", profile.painPoints],
-                      ["Constraints", profile.constraints],
-                      ["Success measures", profile.successMeasures],
                       ["Decision criteria", profile.decisionCriteria],
-                      ["Objections", profile.objections],
                       ["Common questions", profile.commonQuestions],
                       ["Proof needs", profile.proofNeeds],
                       ["Vocabulary", profile.vocabulary],
-                      ["Buying triggers", profile.buyingTriggers],
-                      ["Channels", profile.channels],
-                      ["Communities", profile.communities],
-                      ["Websites", profile.websites],
-                      ["Content preferences", profile.contentPreferences],
-                      ["Keywords", profile.keywords],
                       ["AI prompt topics", profile.aiPromptTopics],
                     ]}
                   />
+                  <details className="rounded-lg border border-surface-border bg-surface-sunken">
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+                      SparkToro audience behavior and demographics
+                    </summary>
+                    <div className="border-t border-surface-border bg-surface p-4">
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                        <Distribution title="Age" rows={profile.demographics.age} />
+                        <Distribution title="Gender" rows={profile.demographics.gender} />
+                        <Distribution title="Income" rows={profile.demographics.income} />
+                        <Distribution title="Education" rows={profile.demographics.education} />
+                        <Distribution title="Geography" rows={profile.demographics.geography} />
+                      </div>
+                      <SectionGrid
+                        sections={[
+                          ["Channels", profile.channels],
+                          ["Communities", profile.communities],
+                          ["Websites", profile.websites],
+                          ["Content preferences", profile.contentPreferences],
+                        ]}
+                      />
+                      <p className="mt-3 text-xs text-ink-subtle">
+                        Demographics are aggregate audience distributions, not asserted traits of an
+                        individual.
+                      </p>
+                    </div>
+                  </details>
+                  <details className="rounded-lg border border-surface-border bg-surface-sunken">
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+                      Full persona profile
+                    </summary>
+                    <div className="border-t border-surface-border bg-surface p-4">
+                      <SectionGrid
+                        sections={[
+                          ["Roles", profile.firmographics.roles],
+                          ["Seniority", profile.firmographics.seniority],
+                          ["Departments", profile.firmographics.departments],
+                          ["Industries", profile.firmographics.industries],
+                          ["Company size", profile.firmographics.companySize],
+                          ["Experience", profile.firmographics.experience],
+                          ["Motivations", profile.motivations],
+                          ["Constraints", profile.constraints],
+                          ["Success measures", profile.successMeasures],
+                          ["Objections", profile.objections],
+                          ["Buying triggers", profile.buyingTriggers],
+                          ["Keywords", profile.keywords],
+                        ]}
+                      />
+                    </div>
+                  </details>
                   {canEdit ? (
                     <details className="rounded-lg border border-surface-border bg-surface-sunken">
                       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
@@ -218,14 +250,18 @@ function SectionGrid({ sections }: { sections: [string, PersonaInsight[]][] }) {
         <section key={title} className="rounded-lg border border-surface-border p-4">
           <h3 className="text-sm font-semibold text-ink">{title}</h3>
           <ul className="mt-2 space-y-2">
-            {items.map((item, index) => (
-              <li key={`${item.text}-${index}`} className="text-sm text-ink">
-                <span>{item.text}</span>
-                <span className="ml-2 whitespace-nowrap text-2xs text-ink-subtle">
-                  {item.signalIds.length} refs · {Math.round(item.confidence * 100)}%
-                </span>
-              </li>
-            ))}
+            {items.length ? (
+              items.map((item, index) => (
+                <li key={`${item.text}-${index}`} className="text-sm text-ink">
+                  <span>{item.text}</span>
+                  <span className="ml-2 whitespace-nowrap text-2xs text-ink-subtle">
+                    {item.signalIds.length} refs · {Math.round(item.confidence * 100)}%
+                  </span>
+                </li>
+              ))
+            ) : (
+              <li className="text-sm text-ink-muted">No supported evidence in this section.</li>
+            )}
           </ul>
         </section>
       ))}

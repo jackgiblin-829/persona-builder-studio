@@ -136,7 +136,7 @@ export async function uploadProjectFilesAction(_previous: ActionState, formData:
       revalidatePath(`/projects/${input.projectId}/data`);
       return {
         status: "ok",
-        message: `${created.length} source${created.length === 1 ? "" : "s"} queued for parsing, redaction, and signal extraction.`,
+        message: `${created.length} source${created.length === 1 ? "" : "s"} uploaded and processed into persona evidence.`,
       };
     },
     {
@@ -161,7 +161,7 @@ export async function pasteTranscriptAction(_previous: ActionState, formData: Fo
     revalidatePath(`/projects/${input.projectId}/data`);
     return {
       status: "ok",
-      message: "Transcript queued for parsing, redaction, and signal extraction.",
+      message: "Transcript processed into persona evidence.",
     };
   });
 }
@@ -174,8 +174,7 @@ export async function generatePersonasAction(_previous: ActionState, formData: F
     revalidatePath(`/projects/${input.projectId}/personas`);
     return {
       status: "ok",
-      message:
-        "Persona generation started. The current personas remain available until the replacement is complete.",
+      message: "Personas built from the latest brand evidence and SparkToro audience research.",
     };
   });
 }
@@ -188,7 +187,7 @@ export async function generatePromptsAction(_previous: ActionState, formData: Fo
     return {
       status: "ok",
       message:
-        "Query Funnel generation started for every active persona. Existing baselines remain available until the replacement succeeds.",
+        "Query Funnels built, quality-checked, and approved where they passed the quality gate.",
     };
   });
 }
@@ -200,8 +199,7 @@ export async function refreshMarketResearchAction(_previous: ActionState, formDa
     revalidatePath(`/projects/${input.projectId}/prompts`);
     return {
       status: "ok",
-      message:
-        "Market research refresh started. The approved brief remains active until a draft is approved.",
+      message: "Persona grounding refreshed from uploaded evidence and SparkToro audience signals.",
     };
   });
 }
@@ -270,7 +268,7 @@ export async function retrySourceAction(_previous: ActionState, formData: FormDa
     const ctx = await requireProjectAccess(input.projectId);
     await retrySource(ctx, input.sourceId);
     revalidatePath(`/projects/${input.projectId}/data`);
-    return { status: "ok", message: "Source re-queued." };
+    return { status: "ok", message: "Source reprocessed." };
   });
 }
 

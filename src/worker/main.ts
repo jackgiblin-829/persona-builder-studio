@@ -1,71 +1,16 @@
 import "@/jobs";
 import { hostname } from "node:os";
-import { getQueue, reclaimStaleJobs } from "@/adapters/queue";
-import { getJobHandler, registeredJobTypes } from "@/jobs/registry";
+import { reclaimStaleJobs } from "@/adapters/queue";
+import { registeredJobTypes } from "@/jobs/registry";
+import { runNextQueuedJob } from "@/jobs/runner";
 import { closeDb } from "@/db/client";
 import { env } from "@/lib/env";
-import { isRetryable } from "@/lib/errors";
-import { logger, logJob } from "@/lib/logger";
+import { logger } from "@/lib/logger";
 import { newId, ID_PREFIXES } from "@/lib/ids";
 
 const workerId = `${hostname()}-${process.pid}-${newId(ID_PREFIXES.job).slice(-6)}`;
 let running = true;
 let inFlight = 0;
-
-async function runOne(): Promise<boolean> {
-  const queue = getQueue();
-  const job = await queue.claim(registeredJobTypes(), workerId);
-  if (!job) return false;
-
-  const handler = getJobHandler(job.type);
-  const started = Date.now();
-  logJob({
-    jobId: job.id,
-    jobType: job.type,
-    organizationId: job.organizationId ?? undefined,
-    projectId: job.projectId ?? undefined,
-    attempt: job.attempts,
-    outcome: "started",
-  });
-
-  if (!handler) {
-    await queue.fail(job.id, `No handler registered for job type "${job.type}"`, false);
-    return true;
-  }
-
-  try {
-    const outcome = await handler({ job, workerId });
-    if (outcome.status === "partially_succeeded") {
-      await queue.partiallySucceed(job.id, outcome.result ?? {});
-    } else {
-      await queue.complete(job.id, outcome.result);
-    }
-    logJob({
-      jobId: job.id,
-      jobType: job.type,
-      organizationId: job.organizationId ?? undefined,
-      projectId: job.projectId ?? undefined,
-      attempt: job.attempts,
-      durationMs: Date.now() - started,
-      outcome: outcome.status,
-    });
-  } catch (error) {
-    const retryable = isRetryable(error);
-    const message = error instanceof Error ? error.message : String(error);
-    await queue.fail(job.id, message, retryable);
-    logJob({
-      jobId: job.id,
-      jobType: job.type,
-      organizationId: job.organizationId ?? undefined,
-      projectId: job.projectId ?? undefined,
-      attempt: job.attempts,
-      durationMs: Date.now() - started,
-      outcome: retryable && job.attempts < job.maxAttempts ? "retrying" : "failed",
-      errorCode: error instanceof Error ? error.name : "unknown",
-    });
-  }
-  return true;
-}
 
 async function loop(): Promise<void> {
   while (running) {
@@ -76,7 +21,7 @@ async function loop(): Promise<void> {
     inFlight++;
     let didWork = false;
     try {
-      didWork = await runOne();
+      didWork = await runNextQueuedJob({ workerId });
     } catch (error) {
       logger.error({ err: error }, "worker loop error");
     } finally {

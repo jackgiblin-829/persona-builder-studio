@@ -189,12 +189,37 @@ registerMockGenerator(PERSONA_GENERATION.id, (context) => {
   };
 });
 
+function cleanDemoStrategyTerm(value: string, canonicalBrand: string) {
+  let cleaned = value.replaceAll("**", "").trim();
+  if (cleaned.toLowerCase().startsWith(canonicalBrand.toLowerCase())) {
+    cleaned = cleaned.slice(canonicalBrand.length).trim();
+  }
+  cleaned = cleaned
+    .replace(/^(?:is\s+)?(?:an?\s+)?/i, "")
+    .replace(/^all-in-one\s+/i, "")
+    .trim();
+  const bounded = cleaned.match(/^(.+?\b(?:platform|software|service|solution|tool|system))\b/i);
+  return (bounded?.[1] ?? cleaned)
+    .replace(/\s+des$/i, "")
+    .trim()
+    .slice(0, 160);
+}
+
 registerMockGenerator(MARKET_RESEARCH.id, (context) => {
   const current = context.strategy as PromptStrategy;
   const domain = String(context.domain ?? "example.com").replace(/^https?:\/\//, "");
   const now = "2026-08-11T12:00:00.000Z";
+  const categoryTerms = current.categoryTerms
+    .map((value) => cleanDemoStrategyTerm(value, current.canonicalBrand))
+    .filter(Boolean);
+  const businessLines = current.businessLines
+    .map((value) => cleanDemoStrategyTerm(value, current.canonicalBrand))
+    .filter(Boolean);
+  const normalizedCategories = categoryTerms.length ? categoryTerms : ["business software"];
   const strategy: PromptStrategy = {
     ...current,
+    categoryTerms: normalizedCategories,
+    businessLines: businessLines.length ? businessLines : normalizedCategories,
     competitors: current.competitors.length
       ? current.competitors
       : ["Example Rival", "Example Alternative"],
@@ -230,8 +255,8 @@ registerMockGenerator(MARKET_RESEARCH.id, (context) => {
       kind,
       claim,
       sourceTitle: `${strategy.canonicalBrand} demo research`,
-      sourceUrl: `https://${domain}/research-${index + 1}`,
-      sourceType: "web",
+      sourceUrl: `https://evidence.persona-builder.local/${domain}/research-${index + 1}`,
+      sourceType: "uploaded",
       retrievedAt: now,
     })),
     researchNotes: ["Demo research is deterministic and must not be used as production evidence."],

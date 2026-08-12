@@ -12,6 +12,7 @@ import { NotFoundError, ValidationError } from "@/lib/errors";
 import { ID_PREFIXES, newId } from "@/lib/ids";
 import { detectFormat, verifyMagicBytes } from "@/lib/parsers";
 import { JOB_TYPES } from "@/jobs/registry";
+import { drainProjectJobs } from "@/jobs/runner";
 import { recordAudit } from "./audit";
 
 export const SOURCE_TYPES = [
@@ -57,6 +58,7 @@ export async function createSourcesFromUploads(
   if (files.length > 25) throw new ValidationError("Upload up to 25 files at a time.");
   const created = [];
   for (const file of files) created.push(await createUpload(ctx, input, file));
+  await processPendingSources(ctx);
   return created;
 }
 
@@ -150,10 +152,19 @@ export async function createSourceFromTranscript(
     throw new ValidationError("Give the transcript a short label.");
   if (content.length < 20 || content.length > 2_000_000)
     throw new ValidationError("Paste at least a few transcript lines.");
-  return createUpload(ctx, input, {
+  const source = await createUpload(ctx, input, {
     name: `${label.replace(/[^a-z0-9_-]+/gi, "-")}.txt`,
     type: "text/plain",
     bytes: Buffer.from(content, "utf8"),
+  });
+  await processPendingSources(ctx);
+  return source;
+}
+
+export async function processPendingSources(ctx: ProjectContext) {
+  return drainProjectJobs({
+    projectId: ctx.projectId,
+    types: [JOB_TYPES.ingestSource, JOB_TYPES.extractSignals],
   });
 }
 
@@ -204,4 +215,5 @@ export async function retrySource(ctx: ProjectContext, sourceId: string) {
       idempotencyKey: `retry:${source.id}:${Date.now()}`,
     },
   );
+  await processPendingSources(ctx);
 }

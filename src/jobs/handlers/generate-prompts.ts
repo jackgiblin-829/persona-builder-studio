@@ -42,6 +42,7 @@ import { JOB_TYPES, registerJob } from "../registry";
 const QUALITY_THRESHOLD = 80;
 const SEMANTIC_DUPLICATE_THRESHOLD = 0.86;
 const MAX_REPAIR_ROUNDS = 2;
+export const PROMPT_CELLS_PER_BATCH = 10;
 
 export type ActivePersona = {
   persona: typeof personas.$inferSelect;
@@ -229,9 +230,7 @@ async function generateAndEvaluateInBatches(
   operation: string,
 ) {
   const evaluated: EvaluatedPrompt[] = [];
-  const batches = [...new Set(cells.map((cell) => cell.personaSlug))].map((personaSlug) =>
-    cells.filter((cell) => cell.personaSlug === personaSlug),
-  );
+  const batches = buildPromptGenerationBatches(cells);
   for (let index = 0; index < batches.length; index++) {
     const batch = batches[index]!;
     const result = await generateAndEvaluate(
@@ -243,6 +242,29 @@ async function generateAndEvaluateInBatches(
     evaluated.push(...result);
   }
   return evaluated;
+}
+
+export function buildPromptGenerationBatches(cells: CoverageCell[]): CoverageCell[][] {
+  const batches: CoverageCell[][] = [];
+  for (const personaSlug of new Set(cells.map((cell) => cell.personaSlug))) {
+    const personaCells = cells.filter((cell) => cell.personaSlug === personaSlug);
+    for (let index = 0; index < personaCells.length; index += PROMPT_CELLS_PER_BATCH) {
+      batches.push(personaCells.slice(index, index + PROMPT_CELLS_PER_BATCH));
+    }
+  }
+  return batches;
+}
+
+export function promptCandidateLibrarySchemaForBatch(cellCount: number) {
+  return promptCandidateLibrarySchema.extend({
+    candidates: promptCandidateLibrarySchema.shape.candidates.length(cellCount * 2),
+  });
+}
+
+export function promptQualityEvaluationSchemaForBatch(candidateCount: number) {
+  return promptQualityEvaluationSchema.extend({
+    assessments: promptQualityEvaluationSchema.shape.assessments.length(candidateCount),
+  });
 }
 
 export async function generateAndEvaluate(
@@ -260,6 +282,7 @@ export async function generateAndEvaluate(
   fixed: EvaluatedPrompt[],
   operation: string,
 ) {
+  const candidateSchema = promptCandidateLibrarySchemaForBatch(cells.length);
   const projectContext = JSON.stringify({
     name: context.project.name,
     domain: context.project.canonicalDomain,
@@ -307,12 +330,9 @@ export async function generateAndEvaluate(
           coverage_blueprint: JSON.stringify(cells),
           research_signals: signalContext,
         }),
-        schema: promptCandidateLibrarySchema,
+        schema: candidateSchema,
         schemaName: "GroundedPromptCandidateLibrary",
-        jsonSchema: toStrictJsonSchema(
-          promptCandidateLibrarySchema,
-          "GroundedPromptCandidateLibrary",
-        ),
+        jsonSchema: toStrictJsonSchema(candidateSchema, "GroundedPromptCandidateLibrary"),
         modelTier: PROMPT_GENERATION.modelTier,
         mockContext: {
           strategy: context.strategy,
@@ -371,6 +391,7 @@ export async function generateAndEvaluate(
     coverage_cell: cells.find((cell) => cell.key === candidate.plan_key),
     maximum_semantic_similarity: maximumSimilarities[index],
   }));
+  const evaluationSchema = promptQualityEvaluationSchemaForBatch(evaluationInput.length);
   const evaluated = await withVendorUsage(
     {
       organizationId: context.project.organizationId,
@@ -393,12 +414,9 @@ export async function generateAndEvaluate(
           }),
           candidates: JSON.stringify(evaluationInput),
         }),
-        schema: promptQualityEvaluationSchema,
+        schema: evaluationSchema,
         schemaName: "PromptCandidateQualityEvaluation",
-        jsonSchema: toStrictJsonSchema(
-          promptQualityEvaluationSchema,
-          "PromptCandidateQualityEvaluation",
-        ),
+        jsonSchema: toStrictJsonSchema(evaluationSchema, "PromptCandidateQualityEvaluation"),
         modelTier: PROMPT_QUALITY_EVALUATION.modelTier,
         mockContext: { candidates: evaluationInput },
       }),

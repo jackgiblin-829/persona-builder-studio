@@ -4,7 +4,14 @@ import { getOpenAIAdapter } from "@/adapters/openai";
 import { RESEARCH_STALE_DAYS } from "@/contracts/market-research";
 import { strategyReadiness } from "@/contracts/prompt-strategy";
 import { db } from "@/db/client";
-import { generationRuns, marketResearchBriefs, projects, researchSignals } from "@/db/schema";
+import {
+  generationRuns,
+  marketResearchBriefs,
+  personas,
+  personaVersions,
+  projects,
+  researchSignals,
+} from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { ID_PREFIXES, newId } from "@/lib/ids";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
@@ -37,18 +44,28 @@ registerJob(JOB_TYPES.researchMarket, async ({ job }) => {
     const signals = await db
       .select({
         id: researchSignals.id,
+        sourceKind: researchSignals.sourceKind,
         category: researchSignals.category,
         text: researchSignals.displayText,
         confidence: researchSignals.confidence,
         provenance: researchSignals.provenance,
+        sourceLocation: researchSignals.sourceLocation,
       })
       .from(researchSignals)
       .where(eq(researchSignals.projectId, project.id));
     if (!signals.length) {
       throw new AppError(
         "validation",
-        "Market research requires at least one uploaded-source signal.",
+        "Persona grounding requires completed uploaded or SparkToro evidence.",
       );
+    }
+    const activePersonas = await db
+      .select({ persona: personas, version: personaVersions })
+      .from(personas)
+      .innerJoin(personaVersions, eq(personaVersions.id, personas.currentVersionId))
+      .where(eq(personas.projectId, project.id));
+    if (!activePersonas.length) {
+      throw new AppError("validation", "Generate personas before building Query Funnels.");
     }
     const { adapter, mode } = await getOpenAIAdapter(project.organizationId);
     const result = await withVendorUsage(
@@ -56,7 +73,7 @@ registerJob(JOB_TYPES.researchMarket, async ({ job }) => {
         organizationId: project.organizationId,
         projectId: project.id,
         vendor: "openai",
-        operation: "cited_market_research",
+        operation: "persona_grounding_brief",
         mode,
         jobId: job.id,
       },
@@ -75,13 +92,26 @@ registerJob(JOB_TYPES.researchMarket, async ({ job }) => {
               locale: project.languageLocale,
             }),
             prompt_strategy: JSON.stringify(project.promptStrategy),
-            research_signals: JSON.stringify(signals),
+            persona_profiles: JSON.stringify(
+              activePersonas.map(({ persona, version }) => ({
+                id: persona.id,
+                name: version.name,
+                description: version.description,
+                profile: version.profile,
+                evidenceUrl: `https://evidence.persona-builder.local/personas/${version.id}`,
+              })),
+            ),
+            research_signals: JSON.stringify(
+              signals.map((signal) => ({
+                ...signal,
+                evidenceUrl: `https://evidence.persona-builder.local/signals/${signal.id}`,
+              })),
+            ),
           }),
           schema: marketResearchBriefSchema,
           schemaName: "CitedMarketResearchBrief",
           jsonSchema: toStrictJsonSchema(marketResearchBriefSchema, "CitedMarketResearchBrief"),
           modelTier: MARKET_RESEARCH.modelTier,
-          webSearch: mode === "live",
           mockContext: {
             strategy: project.promptStrategy,
             domain: project.canonicalDomain,

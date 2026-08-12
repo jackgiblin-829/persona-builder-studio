@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull, max } from "drizzle-orm";
 import { z } from "zod";
 import { getQueue } from "@/adapters/queue";
 import { getSparktoroAdapter, SPARKTORO_MAX_REPORT_COST } from "@/adapters/sparktoro";
+import { researchBriefIsStale } from "@/contracts/market-research";
 import { buildCoverageBlueprint, strategyReadiness } from "@/contracts/prompt-strategy";
 import { db } from "@/db/client";
 import {
@@ -15,18 +16,19 @@ import {
   type PersonaProfile,
 } from "@/db/schema";
 import { requireCapability, type ProjectContext } from "@/lib/auth/context";
-import { sha256 } from "@/lib/crypto";
 import { NotFoundError, ValidationError } from "@/lib/errors";
 import { ID_PREFIXES, newId } from "@/lib/ids";
+import { sparkReportHash } from "@/lib/sparktoro-report";
 import { JOB_TYPES } from "@/jobs/registry";
+import { drainProjectJobs } from "@/jobs/runner";
 import { getProject } from "./projects";
-import { getApprovedMarketResearchBrief } from "./market-research";
+import {
+  buildAndApprovePersonaGroundingBrief,
+  getApprovedMarketResearchBrief,
+} from "./market-research";
+import { approveCurrentPromptLibrary } from "./prompts";
 import { recordAudit } from "./audit";
 import { withVendorUsage } from "./usage";
-
-export function sparkReportHash(audience: string, market: string, locale: string) {
-  return sha256(JSON.stringify({ audience: audience.trim().toLowerCase(), market, locale }));
-}
 
 export async function getPersonaGenerationPreflight(ctx: ProjectContext) {
   const project = await getProject(ctx);
@@ -46,6 +48,7 @@ export async function getPersonaGenerationPreflight(ctx: ProjectContext) {
     project.sparktoroAudienceDescription,
     project.primaryMarket,
     project.languageLocale,
+    mode,
   );
   const { sparkReports } = await import("@/db/schema");
   const [cached] = await db
@@ -70,6 +73,10 @@ export async function getPersonaGenerationPreflight(ctx: ProjectContext) {
 
 export async function startPersonaGeneration(ctx: ProjectContext) {
   requireCapability(ctx, "persona:generate");
+  await drainProjectJobs({
+    projectId: ctx.projectId,
+    types: [JOB_TYPES.ingestSource, JOB_TYPES.extractSignals],
+  });
   const project = await getProject(ctx);
   const [completed] = await db
     .select({ id: dataSources.id })
@@ -100,7 +107,10 @@ export async function startPersonaGeneration(ctx: ProjectContext) {
       run.inputSnapshot.market === project.primaryMarket &&
       run.inputSnapshot.locale === project.languageLocale,
   );
-  if (matchingRun) return matchingRun.id;
+  if (matchingRun) {
+    await drainProjectJobs({ projectId: ctx.projectId, types: [JOB_TYPES.generatePersonas] });
+    return matchingRun.id;
+  }
 
   const preflight = await getPersonaGenerationPreflight(ctx);
   if (!preflight.sufficient) {
@@ -147,6 +157,15 @@ export async function startPersonaGeneration(ctx: ProjectContext) {
     entityType: "generation_run",
     entityId: runId,
   });
+  await drainProjectJobs({ projectId: ctx.projectId, types: [JOB_TYPES.generatePersonas] });
+  const [finished] = await db
+    .select({ status: generationRuns.status, errorMessage: generationRuns.errorMessage })
+    .from(generationRuns)
+    .where(eq(generationRuns.id, runId))
+    .limit(1);
+  if (finished?.status === "failed") {
+    throw new ValidationError(finished.errorMessage ?? "Persona generation failed.");
+  }
   return runId;
 }
 
@@ -156,15 +175,16 @@ export async function startPromptGeneration(
   reason: "manual" | "persona_edit" | "persona_regeneration" = "manual",
 ) {
   requireCapability(ctx, "prompt:generate");
-  const project = await getProject(ctx);
   const active = await db
     .select({
       id: personas.id,
       versionId: personas.currentVersionId,
+      versionCreatedAt: personaVersions.createdAt,
       slug: personas.slug,
       name: personas.name,
     })
     .from(personas)
+    .innerJoin(personaVersions, eq(personaVersions.id, personas.currentVersionId))
     .where(and(eq(personas.projectId, ctx.projectId), isNull(personas.archivedAt)));
   const selected = personaIds?.length
     ? active.filter((item) => personaIds.includes(item.id))
@@ -172,11 +192,24 @@ export async function startPromptGeneration(
   if (!selected.length || selected.some((item) => !item.versionId)) {
     throw new ValidationError("Generate personas before generating prompts.");
   }
+  const projectBeforeGrounding = await getProject(ctx);
+  let brief = await getApprovedMarketResearchBrief(ctx);
+  const approvedBrief = brief;
+  const canReuseGrounding =
+    approvedBrief &&
+    approvedBrief.sourceRevision === projectBeforeGrounding.sourceRevision &&
+    !projectBeforeGrounding.promptStrategyEdited &&
+    !researchBriefIsStale(approvedBrief.staleAt) &&
+    selected.every((item) => item.versionCreatedAt <= approvedBrief.createdAt);
+  if (!canReuseGrounding) {
+    await buildAndApprovePersonaGroundingBrief(ctx);
+    brief = await getApprovedMarketResearchBrief(ctx);
+  }
+  const project = await getProject(ctx);
   const readiness = strategyReadiness(project.promptStrategy);
   if (!readiness.ready) {
     throw new ValidationError(`Complete the prompt strategy: ${readiness.blockers.join(" ")}`);
   }
-  const brief = await getApprovedMarketResearchBrief(ctx);
   if (!brief) {
     throw new ValidationError(
       "Refresh and approve the market research brief before generating prompts.",
@@ -237,6 +270,16 @@ export async function startPromptGeneration(
     entityId: runId,
     metadata: { reason, personaCount: selected.length },
   });
+  await drainProjectJobs({ projectId: ctx.projectId, types: [JOB_TYPES.generatePrompts] });
+  const [finished] = await db
+    .select({ status: generationRuns.status, errorMessage: generationRuns.errorMessage })
+    .from(generationRuns)
+    .where(eq(generationRuns.id, runId))
+    .limit(1);
+  if (finished?.status === "failed") {
+    throw new ValidationError(finished.errorMessage ?? "Query Funnel generation failed.");
+  }
+  await approveCurrentPromptLibrary(ctx);
   return runId;
 }
 
