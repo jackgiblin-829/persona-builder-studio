@@ -468,13 +468,13 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
           namedEntities: plan.stage === "decision" ? ["Northwind Enterprise Platform"] : [],
           qualityScore: 92,
           rubricScores: {
-            categorySpecificity: 18,
-            personaQualifierFit: 14,
+            categorySpecificity: 14,
+            personaContextFit: 14,
             naturalBuyerLanguage: 14,
-            measurementValue: 13,
-            researchSupport: 14,
+            funnelCoherence: 18,
+            answerValue: 14,
+            evidenceSupport: 9,
             distinctiveness: 9,
-            metadataCompleteness: 10,
             total: 92,
           },
           evaluatorExplanation:

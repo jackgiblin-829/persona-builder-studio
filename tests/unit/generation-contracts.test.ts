@@ -7,12 +7,15 @@ import {
   TOPIC_CLASSES,
   type PromptStrategy,
 } from "@/contracts/prompt-strategy";
+import { hasPromptEvidence } from "@/contracts/prompt-generation";
 import { sanitizePersonaReferences } from "@/jobs/handlers/generate-personas";
 import {
   buildPromptGenerationBatches,
   PROMPT_CELLS_PER_BATCH,
   promptCandidateLibrarySchemaForBatch,
   promptQualityEvaluationSchemaForBatch,
+  validateCandidateCoverage,
+  validateFunnelHierarchy,
   validatePromptLibrary,
 } from "@/jobs/handlers/generate-prompts";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
@@ -111,6 +114,13 @@ function selectedLibrary(
 }
 
 describe("persona, research, and prompt quality contracts", () => {
+  it("accepts either a persona signal or an approved brief fact as evidence", () => {
+    expect(hasPromptEvidence(["signal-1"], [])).toBe(true);
+    expect(hasPromptEvidence([], ["fact-001"])).toBe(true);
+    expect(hasPromptEvidence(["signal-1"], ["fact-001"])).toBe(true);
+    expect(hasPromptEvidence([], [])).toBe(false);
+  });
+
   it("emits an OpenAI-compatible schema while retaining application URL validation", () => {
     const jsonSchema = toStrictJsonSchema(marketResearchBriefSchema, "CitedMarketResearchBrief");
     const properties = jsonSchema.properties as Record<string, Record<string, unknown>>;
@@ -251,6 +261,23 @@ describe("persona, research, and prompt quality contracts", () => {
       45,
     );
     expect(projectBlueprint.filter((cell) => cell.funnelStage === "awareness")).toHaveLength(90);
+    expect(() => validateFunnelHierarchy(projectBlueprint)).not.toThrow();
+    for (const persona of promptPersonas) {
+      const personaCells = projectBlueprint.filter((cell) => cell.personaSlug === persona.slug);
+      const decisions = personaCells.filter((cell) => cell.funnelStage === "decision");
+      const considerations = personaCells.filter((cell) => cell.funnelStage === "consideration");
+      expect(
+        decisions.map(
+          (decision) => personaCells.filter((cell) => cell.parentKey === decision.key).length,
+        ),
+      ).toEqual([3, 3, 3, 3, 3]);
+      expect(
+        considerations.map(
+          (consideration) =>
+            personaCells.filter((cell) => cell.parentKey === consideration.key).length,
+        ),
+      ).toEqual(Array(15).fill(2));
+    }
     expect(result.data.candidates).toHaveLength(100);
     expect(new Set(blueprint.map((cell) => cell.topicClass))).toEqual(new Set(TOPIC_CLASSES));
     expect(new Set(result.data.candidates.map((candidate) => candidate.candidate_key)).size).toBe(
@@ -287,6 +314,41 @@ describe("persona, research, and prompt quality contracts", () => {
     );
   });
 
+  it("rejects a candidate batch that duplicates one plan key and omits another", async () => {
+    const { blueprint, result } = await candidatesFor(strategy);
+    const malformed = structuredClone(result.data.candidates);
+    malformed[2]!.plan_key = malformed[0]!.plan_key;
+    expect(() => validateCandidateCoverage(malformed, blueprint)).toThrow(/two candidates/i);
+  });
+
+  it("balances non-default children without crossing pathways or business lines", () => {
+    const nonDefault: PromptStrategy = {
+      ...strategy,
+      targetPromptCount: 37,
+      funnelTargets: { decision: 4, consideration: 10, awareness: 23 },
+    };
+    const blueprint = buildCoverageBlueprint(nonDefault, promptPersonas.slice(0, 1));
+    expect(blueprint).toHaveLength(37);
+    expect(() => validateFunnelHierarchy(blueprint)).not.toThrow();
+    const decisions = blueprint.filter((cell) => cell.funnelStage === "decision");
+    const considerations = blueprint.filter((cell) => cell.funnelStage === "consideration");
+    expect(
+      decisions.map(
+        (decision) => blueprint.filter((cell) => cell.parentKey === decision.key).length,
+      ),
+    ).toEqual([3, 3, 2, 2]);
+    expect(
+      considerations.map(
+        (consideration) => blueprint.filter((cell) => cell.parentKey === consideration.key).length,
+      ),
+    ).toEqual([3, 3, 3, 2, 2, 2, 2, 2, 2, 2]);
+    for (const child of blueprint.filter((cell) => cell.parentKey)) {
+      const parent = blueprint.find((cell) => cell.key === child.parentKey)!;
+      expect(child.pathwayKey).toBe(parent.pathwayKey);
+      expect(child.businessLine).toBe(parent.businessLine);
+    }
+  });
+
   it("scores every candidate and makes near-duplicate embeddings measurable", async () => {
     const { result } = await candidatesFor(strategy);
     const evaluation = await adapter.generateStructured({
@@ -303,7 +365,9 @@ describe("persona, research, and prompt quality contracts", () => {
     });
     expect(evaluation.data.assessments).toHaveLength(100);
     expect(
-      evaluation.data.assessments.every((assessment) => !assessment.hard_fail_reasons.length),
+      evaluation.data.assessments.every(
+        (assessment) => !assessment.issues.some((issue) => issue.blocking),
+      ),
     ).toBe(true);
 
     const embedded = await adapter.embed({
@@ -355,6 +419,50 @@ describe("persona, research, and prompt quality contracts", () => {
         strategy,
       ),
     ).toThrow(/duplicate/i);
+
+    const comparativeCell = blueprint.find((cell) => cell.promptType === "competitor_comparative")!;
+    const wrongCompetitor = structuredClone(library);
+    const comparativePrompt = wrongCompetitor.prompts.find(
+      (prompt) => prompt.plan_key === comparativeCell.key,
+    )!;
+    comparativePrompt.prompt_text = comparativePrompt.prompt_text.replace(
+      comparativeCell.competitor,
+      strategy.competitors.find((competitor) => competitor !== comparativeCell.competitor)!,
+    );
+    expect(() =>
+      validatePromptLibrary(
+        wrongCompetitor,
+        blueprint,
+        new Set(signals.map((signal) => signal.id)),
+        strategy,
+      ),
+    ).toThrow(/competitor/i);
+
+    const invalidHierarchy = structuredClone(blueprint);
+    const consideration = invalidHierarchy.find((cell) => cell.funnelStage === "consideration")!;
+    consideration.parentKey = invalidHierarchy.find(
+      (cell) => cell.funnelStage === "awareness",
+    )!.key;
+    expect(() => validateFunnelHierarchy(invalidHierarchy)).toThrow(/invalid parent/i);
+  });
+
+  it("accepts natural semantic equivalents instead of requiring internal labels verbatim", async () => {
+    const { blueprint, result } = await candidatesFor(strategy);
+    const library = selectedLibrary(result.data.candidates);
+    const cell = blueprint.find(
+      (item) => item.businessLine === "workflow automation" && item.promptType === "unbranded",
+    )!;
+    const prompt = library.prompts.find((item) => item.plan_key === cell.key)!;
+    prompt.prompt_text =
+      "How can a regulated team automate recurring operational work as its processes and reporting obligations expand?";
+    expect(() =>
+      validatePromptLibrary(
+        library,
+        blueprint,
+        new Set(signals.map((signal) => signal.id)),
+        strategy,
+      ),
+    ).not.toThrow();
   });
 
   it("stays category-specific across Fidelity, payroll, and cybersecurity fixtures", async () => {

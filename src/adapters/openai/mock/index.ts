@@ -1,12 +1,15 @@
-import { registerMockGenerator } from "../mock";
+import { registerMockGenerator, type MockGenerator } from "../mock";
 import {
   MARKET_RESEARCH,
   PERSONA_GENERATION,
   PROMPT_GENERATION,
+  PROMPT_PLANNING,
   PROMPT_QUALITY_EVALUATION,
+  PROMPT_REPAIR,
   SIGNAL_EXTRACTION,
 } from "@/prompts/registry";
 import type { CoverageCell, PromptStrategy } from "@/contracts/prompt-strategy";
+import { hasPromptEvidence } from "@/contracts/prompt-generation";
 
 type Signal = { id: string; category: string; displayText: string };
 
@@ -263,7 +266,58 @@ registerMockGenerator(MARKET_RESEARCH.id, (context) => {
   };
 });
 
-registerMockGenerator(PROMPT_GENERATION.id, (context) => {
+registerMockGenerator(PROMPT_PLANNING.id, (context) => {
+  const blueprint = (context.blueprint as CoverageCell[] | undefined) ?? [];
+  const signals = (context.signals as Signal[] | undefined) ?? [];
+  const factIds = ((context.factIds as string[] | undefined) ?? []).filter(Boolean);
+  const personaSlug = String(context.personaSlug ?? blueprint[0]?.personaSlug ?? "buyer");
+  const personaName = String(context.personaName ?? "Evidence-backed buyer");
+  const strategy = context.strategy as PromptStrategy | undefined;
+  const safeSignalIds = signals.map((signal) => signal.id);
+  return {
+    persona_slug: personaSlug,
+    plan_summary:
+      "A bottom-up Query Funnel that connects evidence-backed awareness needs to evaluation questions and final purchase decisions.",
+    cells: blueprint.map((cell) => {
+      const signalId = safeSignalIds[cell.sequence % Math.max(1, safeSignalIds.length)];
+      const factId = factIds[cell.sequence % Math.max(1, factIds.length)];
+      const permittedEntities =
+        cell.promptType === "competitor_comparative"
+          ? [strategy?.canonicalBrand, cell.competitor]
+          : cell.promptType === "branded" || cell.promptType === "entity_disambiguation"
+            ? [
+                strategy?.canonicalBrand,
+                strategy?.parentCompany,
+                ...(strategy?.aliases ?? []),
+                ...(strategy?.entityCollisions ?? []),
+              ]
+            : [];
+      return {
+        plan_key: cell.key,
+        buyer_moment: cell.buyerQualifier || `${personaName} evaluating ${cell.businessLine}`,
+        information_need: `${cell.signalTracked} for ${cell.businessLine}`,
+        stage_objective:
+          cell.funnelStage === "decision"
+            ? `Support a final ${cell.businessLine} selection.`
+            : cell.funnelStage === "consideration"
+              ? `Evaluate what is required before the assigned ${cell.businessLine} decision.`
+              : `Explain an earlier ${cell.businessLine} problem that leads to evaluation.`,
+        required_concepts: [cell.businessLine, cell.signalTracked],
+        permitted_entities: permittedEntities.filter((value): value is string => Boolean(value)),
+        signal_ids: signalId ? [signalId] : [],
+        research_fact_ids: factId ? [factId] : [],
+        parent_reason: cell.parentKey
+          ? `This information need prepares the buyer for ${cell.parentKey}.`
+          : "This is a conversion-adjacent decision anchor.",
+        evidence_status: hasPromptEvidence(signalId ? [signalId] : [], factId ? [factId] : [])
+          ? "supported"
+          : "insufficient_evidence",
+      };
+    }),
+  };
+});
+
+const promptCandidateGenerator: MockGenerator = (context) => {
   const signals = (context.signals as Signal[] | undefined) ?? [];
   const blueprint = (context.blueprint as CoverageCell[] | undefined) ?? [];
   const strategy = (context.strategy as PromptStrategy | undefined) ?? {
@@ -428,23 +482,27 @@ registerMockGenerator(PROMPT_GENERATION.id, (context) => {
       })),
     ),
   };
-});
+};
+
+registerMockGenerator(PROMPT_GENERATION.id, promptCandidateGenerator);
+registerMockGenerator(PROMPT_REPAIR.id, promptCandidateGenerator);
 
 registerMockGenerator(PROMPT_QUALITY_EVALUATION.id, (context) => {
   const candidates = (context.candidates as Array<{ candidate_key: string }> | undefined) ?? [];
   return {
     assessments: candidates.map((candidate, index) => ({
       candidate_key: candidate.candidate_key,
-      category_specificity: 19,
-      persona_qualifier_fit: index % 2 === 0 ? 14 : 13,
+      category_specificity: 14,
+      persona_context_fit: index % 2 === 0 ? 14 : 13,
       natural_buyer_language: index % 2 === 0 ? 14 : 13,
-      measurement_value: 14,
-      research_support: 14,
+      funnel_coherence: 18,
+      answer_value: 14,
+      evidence_support: 9,
       distinctiveness: index % 2 === 0 ? 9 : 8,
-      metadata_completeness: 10,
-      hard_fail_reasons: [],
+      issues: [],
       explanation:
-        "The candidate is category-specific, supported, natural, measurable, and complete.",
+        "The candidate is specific, supported, natural, stage-appropriate, and connected to its parent.",
+      repair_instruction: "",
     })),
   };
 });

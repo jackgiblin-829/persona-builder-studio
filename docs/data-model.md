@@ -21,9 +21,9 @@ Every project-owned table carries both `organization_id` and `project_id` where 
 - `generation_runs` records workflow type, stage, progress, warnings, retry state, input snapshot, result IDs, and terminal error.
 - `personas` is the stable identity; `persona_versions` stores immutable traditional profiles; `persona_version_signals` links evidence.
 - `projects.prompt_strategy` stores the editable brand, category, business-line, competitor, qualifier, and coverage brief.
-- `prompt_sets` remains the stable per-persona publication pointer, while generation creates a project-wide, globally deduplicated Query Funnel blueprint with a complete baseline for each persona. `prompt_set_versions` is immutable and references its frozen research brief. `prompt_clusters` represent decision pathways. `generated_prompts` retain the funnel stage, stable coverage key, parent coverage key, taxonomy, rubric scores, evaluator explanation, evidence graph, semantic-similarity result, archetype, and research-fact references. Editorial review status is mutable, audited workflow metadata rather than generated prompt content.
+- `prompt_sets` remains the stable per-persona publication pointer, while generation creates a project-wide, globally deduplicated Query Funnel blueprint with a complete baseline for each persona. `prompt_set_versions` is immutable and records `draft`, `current`, or `superseded` lifecycle state, its frozen research brief, planner/writer/evaluator/repair versions, schema version, actual model IDs, and generation metrics. `prompt_clusters` represent decision pathways. `generated_prompts` retain the funnel stage, stable coverage key, parent coverage key, taxonomy, rubric scores, evaluator explanation, typed quality issues, evidence graph, semantic-similarity result, archetype, and research-fact references. Editorial review status is mutable, audited workflow metadata rather than generated prompt content.
 
-Stable rows point to the latest fully completed version only. New versions are published transactionally.
+Stable rows point to the latest fully passing version only. Failed generations and edits remain drafts; complete project-wide versions are published transactionally.
 
 ## Operations
 

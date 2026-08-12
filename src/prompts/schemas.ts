@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { QUALITY_ISSUE_CODES } from "@/contracts/prompt-generation";
 
-export const SCHEMA_VERSION = "5.0.0";
+export const SCHEMA_VERSION = "6.0.0";
 
 const promptStrategySchema = z.object({
   canonicalBrand: z.string().min(2).max(160),
@@ -158,6 +159,26 @@ export const personaGenerationSchema = z.object({
 });
 export type PersonaGeneration = z.infer<typeof personaGenerationSchema>;
 
+const promptPlanCellSchema = z.object({
+  plan_key: z.string().regex(/^cell-\d{3}$/),
+  buyer_moment: z.string().min(8).max(300),
+  information_need: z.string().min(8).max(400),
+  stage_objective: z.string().min(8).max(400),
+  required_concepts: z.array(z.string().min(2).max(160)).min(1).max(8),
+  permitted_entities: z.array(z.string().min(1).max(200)).max(12),
+  signal_ids: z.array(z.string().min(1)).max(8),
+  research_fact_ids: z.array(z.string().regex(/^fact-\d{3}$/)).max(8),
+  parent_reason: z.string().min(8).max(400),
+  evidence_status: z.enum(["supported", "insufficient_evidence"]),
+});
+
+export const promptPlanSchema = z.object({
+  persona_slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  plan_summary: z.string().min(20).max(1600),
+  cells: z.array(promptPlanCellSchema).min(1).max(100),
+});
+export type PromptPlanGeneration = z.infer<typeof promptPlanSchema>;
+
 export const promptCandidateLibrarySchema = z.object({
   blueprint_summary: z.string().min(20).max(2000),
   candidates: z
@@ -168,11 +189,8 @@ export const promptCandidateLibrarySchema = z.object({
         prompt_text: z.string().min(12).max(500),
         intent: z.string().min(2).max(160),
         expected_answer_elements: z.array(z.string().min(2).max(300)).min(2).max(10),
-        signal_ids: z.array(z.string().min(1)).min(1).max(16),
-        research_fact_ids: z
-          .array(z.string().regex(/^fact-\d{3}$/))
-          .min(1)
-          .max(16),
+        signal_ids: z.array(z.string().min(1)).max(16),
+        research_fact_ids: z.array(z.string().regex(/^fact-\d{3}$/)).max(16),
       }),
     )
     .min(2)
@@ -180,20 +198,31 @@ export const promptCandidateLibrarySchema = z.object({
 });
 export type PromptCandidateLibrary = z.infer<typeof promptCandidateLibrarySchema>;
 
+export const promptRepairSchema = promptCandidateLibrarySchema;
+
 export const promptQualityEvaluationSchema = z.object({
   assessments: z
     .array(
       z.object({
         candidate_key: z.string().regex(/^cell-\d{3}-[ab]$/),
-        category_specificity: z.number().int().min(0).max(20),
-        persona_qualifier_fit: z.number().int().min(0).max(15),
+        category_specificity: z.number().int().min(0).max(15),
+        persona_context_fit: z.number().int().min(0).max(15),
         natural_buyer_language: z.number().int().min(0).max(15),
-        measurement_value: z.number().int().min(0).max(15),
-        research_support: z.number().int().min(0).max(15),
+        funnel_coherence: z.number().int().min(0).max(20),
+        answer_value: z.number().int().min(0).max(15),
+        evidence_support: z.number().int().min(0).max(10),
         distinctiveness: z.number().int().min(0).max(10),
-        metadata_completeness: z.number().int().min(0).max(10),
-        hard_fail_reasons: z.array(z.string().min(2).max(300)).max(10),
+        issues: z
+          .array(
+            z.object({
+              code: z.enum(QUALITY_ISSUE_CODES),
+              message: z.string().min(2).max(300),
+              blocking: z.boolean(),
+            }),
+          )
+          .max(10),
         explanation: z.string().min(5).max(600),
+        repair_instruction: z.string().max(600),
       }),
     )
     .min(2)

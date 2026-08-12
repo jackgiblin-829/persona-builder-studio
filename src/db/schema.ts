@@ -18,6 +18,11 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type { MarketResearchBriefContent } from "@/contracts/market-research";
+import type {
+  PromptGenerationMetrics,
+  PromptQualityIssue,
+  PromptQualityScores,
+} from "@/contracts/prompt-generation";
 import {
   EMPTY_PROMPT_STRATEGY,
   type PromptStrategy,
@@ -80,17 +85,13 @@ export const workflowStageEnum = pgEnum("workflow_stage", [
   "validating",
   "ready",
 ]);
+export const promptVersionLifecycleEnum = pgEnum("prompt_version_lifecycle", [
+  "draft",
+  "current",
+  "superseded",
+]);
 
-export type PromptRubricScores = {
-  categorySpecificity: number;
-  personaQualifierFit: number;
-  naturalBuyerLanguage: number;
-  measurementValue: number;
-  researchSupport: number;
-  distinctiveness: number;
-  metadataCompleteness: number;
-  total: number;
-};
+export type PromptRubricScores = PromptQualityScores;
 export const geoCategoryEnum = pgEnum("geo_category", [
   "problem_discovery",
   "foundational_education",
@@ -604,7 +605,32 @@ export const promptSetVersions = pgTable(
     modelProvider: text("model_provider"),
     modelId: text("model_id"),
     dataOrigin: dataOriginEnum("data_origin").notNull(),
+    lifecycleStatus: promptVersionLifecycleEnum("lifecycle_status").notNull().default("current"),
     researchBriefId: text("research_brief_id"),
+    plannerPromptVersion: text("planner_prompt_version"),
+    writerPromptVersion: text("writer_prompt_version"),
+    evaluatorPromptVersion: text("evaluator_prompt_version"),
+    repairPromptVersion: text("repair_prompt_version"),
+    schemaVersion: text("schema_version"),
+    generationMetrics: jsonb("generation_metrics")
+      .$type<PromptGenerationMetrics>()
+      .notNull()
+      .default({
+        plannerCalls: 0,
+        writerCalls: 0,
+        evaluatorCalls: 0,
+        repairCalls: 0,
+        repairRounds: 0,
+        initialCellCount: 0,
+        initialPassCount: 0,
+        finalPassCount: 0,
+        durationMs: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        costCents: 0,
+        modelIds: [],
+        byTemplate: {},
+      }),
     strategySnapshot: jsonb("strategy_snapshot")
       .$type<PromptStrategy>()
       .notNull()
@@ -689,15 +715,16 @@ export const generatedPrompts = pgTable(
     qualityScore: doublePrecision("quality_score").notNull().default(1),
     rubricScores: jsonb("rubric_scores").$type<PromptRubricScores>().notNull().default({
       categorySpecificity: 0,
-      personaQualifierFit: 0,
+      personaContextFit: 0,
       naturalBuyerLanguage: 0,
-      measurementValue: 0,
-      researchSupport: 0,
+      funnelCoherence: 0,
+      answerValue: 0,
+      evidenceSupport: 0,
       distinctiveness: 0,
-      metadataCompleteness: 0,
       total: 0,
     }),
     evaluatorExplanation: text("evaluator_explanation").notNull().default(""),
+    qualityIssues: jsonb("quality_issues").$type<PromptQualityIssue[]>().notNull().default([]),
     researchFactIds: jsonb("research_fact_ids").$type<string[]>().notNull().default([]),
     maximumSimilarity: doublePrecision("maximum_similarity").notNull().default(0),
     reviewStatus: text("review_status").notNull().default("ready"),

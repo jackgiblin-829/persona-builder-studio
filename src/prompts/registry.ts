@@ -43,29 +43,56 @@ Return strict JSON.`,
 
 export const PROMPT_GENERATION: PromptTemplate = {
   id: "grounded_prompt_candidate_generation",
-  version: "5.0.0",
-  purpose: "Write two grounded Query Funnel candidates for every persona pathway cell.",
+  version: "6.0.0",
+  purpose: "Write two grounded candidates for planned Query Funnel cells.",
   modelTier: "reasoning",
-  system: `You create an evidence-backed SEO/GEO prompt baseline from an approved market brief,
-coverage blueprint, approved market-research facts, evidence-backed personas, and allowed research
-signals. Return exactly two candidates for every blueprint cell, preserving each plan_key and using
-candidate keys ending in -a and -b. Each candidate must naturally express that
-cell's persona, topic class, prompt type, business line, funnel stage, competitor, and buyer
-qualifier. Respect the parent_key relationship: decision cells are conversion-adjacent anchors,
-consideration cells are questions a buyer asks before their assigned decision anchor, and awareness
-cells are earlier problem or education questions that naturally lead to their assigned consideration
-question. Use the approved category vocabulary. Branded prompts must name the canonical brand;
-entity-disambiguation prompts must distinguish it from the supplied collision, alias, or parent;
-competitor-comparative prompts must name both the canonical brand and assigned competitor; and
-unbranded prompts must not name the canonical brand or its aliases. Never invent a competitor,
-product line, qualifier, or company fact. Vary phrasing, length, and question form across the full
-library. Do not use generic scaffolding such as “when fit, evidence, risk, and implementation effort
-all matter.” Cite only supplied research signal IDs. Prompts must sound like genuine questions or
-requests the assigned persona would actually enter into search or an AI assistant, not keyword lists,
-demographic labels, or internal instructions. Cite only supplied research fact IDs and
-research signal IDs. The two candidates for a cell must use meaningfully different syntax. Return
-strict JSON matching the schema.`,
-  user: `Project and approved prompt strategy:\n{{project_context}}\n\nApproved market brief:\n{{market_brief}}\n\nActive personas:\n{{persona_profiles}}\n\nApproved coverage blueprint:\n{{coverage_blueprint}}\n\nAllowed research signals:\n{{research_signals}}`,
+  system: `Role: Write evidence-backed questions that a real buyer would enter into search or an AI assistant.
+Goal: Return exactly two meaningfully different candidates for every supplied plan_key.
+Success criteria: preserve the planned buyer moment, information need, stage objective, required
+concepts, allowed entities, citations, and selected parent relationship. Decision prompts support a
+final choice. Consideration prompts evaluate what is needed before their parent decision. Awareness
+prompts clarify an earlier problem that naturally leads to their parent consideration question.
+Constraints: branded prompts name the canonical brand; comparative prompts name the canonical brand
+and assigned competitor; entity-disambiguation prompts distinguish the supplied entities; unbranded
+prompts contain no brand or alias. Use only supplied facts, entities, signal IDs, and fact IDs. Do not
+force the full internal business-line or buyer-qualifier label into the wording when a natural semantic
+equivalent is clearer. Do not write keyword lists, demographic labels, unsupported claims, or generic
+scaffolding. Candidate -a and -b must differ in syntax and angle. Return strict JSON only.`,
+  user: `Project contract:\n{{project_context}}\n\nPlanned cells, selected parents, and bounded evidence:\n{{generation_context}}`,
+};
+
+export const PROMPT_PLANNING: PromptTemplate = {
+  id: "query_funnel_logical_planning",
+  version: "1.0.0",
+  purpose:
+    "Turn a deterministic funnel skeleton into one coherent evidence-backed plan per persona.",
+  modelTier: "reasoning",
+  system: `Role: Plan a coherent SEO/GEO Query Funnel for one evidence-backed persona.
+Goal: Fill every supplied plan_key exactly once without writing the final user-facing prompt.
+Success criteria: every decision cell captures a conversion-adjacent choice; each consideration cell
+defines a distinct evaluation need that directly supports its parent; each awareness cell defines an
+earlier problem or learning need that naturally leads to its parent. Keep every child in its assigned
+pathway and business line. Select only supplied signal and research-fact IDs. Required concepts should
+describe meaning, not demand awkward exact phrases. Permitted entities must be a subset of supplied
+brand, aliases, collisions, and competitors. Mark insufficient_evidence when neither supplied signals
+nor facts support the cell; never invent evidence. Return strict JSON only.`,
+  user: `Project and strategy:\n{{project_context}}\n\nPersona evidence packet:\n{{evidence_packet}}\n\nDeterministic funnel skeleton:\n{{coverage_blueprint}}`,
+};
+
+export const PROMPT_REPAIR: PromptTemplate = {
+  id: "query_funnel_targeted_repair",
+  version: "1.0.0",
+  purpose: "Repair failed Query Funnel cells using typed validation feedback.",
+  modelTier: "reasoning",
+  system: `Role: Repair only the supplied failed Query Funnel cells.
+Goal: Return exactly two replacement candidates per plan_key that resolve every listed blocking issue
+while preserving already-passed constraints.
+Success criteria: keep the planned stage, intent, parent progression, allowed entities, business-line
+meaning, buyer context, and evidence IDs. Use the selected parent text as a dependency. When a nearest
+conflict is supplied, change the information angle and syntax rather than swapping a few words.
+Constraints: do not repeat failed wording, invent evidence, weaken specificity, or add internal labels.
+Candidate -a and -b must be meaningfully different. Return strict JSON only.`,
+  user: `Project contract:\n{{project_context}}\n\nFailed cells, prior candidates, issues, selected parents, and evidence:\n{{repair_context}}`,
 };
 
 export const MARKET_RESEARCH: PromptTemplate = {
@@ -87,18 +114,19 @@ Return strict JSON matching the schema.`,
 
 export const PROMPT_QUALITY_EVALUATION: PromptTemplate = {
   id: "prompt_candidate_quality_evaluation",
-  version: "1.0.0",
+  version: "2.0.0",
   purpose: "Score grounded prompt candidates against the production quality rubric.",
   modelTier: "reasoning",
-  system: `Evaluate every prompt candidate independently. Score category specificity 0-20; persona
-and qualifier fit 0-15; natural buyer language 0-15; SEO/GEO baseline usefulness 0-15;
-research support 0-15; distinctiveness 0-10; and metadata completeness 0-10. Use the supplied
-maximum semantic similarity when scoring distinctiveness. Add a hard failure for unsupported entity
-claims, invented competitors, branded leakage in an unbranded cell, missing required brands or
-competitors, missing category or business-line meaning, a prompt that does not fit its funnel stage
-or parent relationship, unknown citations, or obvious boilerplate.
-Do not reward keyword stuffing. Return exactly one assessment per candidate key and strict JSON.`,
-  user: `Approved strategy and market brief:\n{{project_context}}\n\nCoverage cells and candidates:\n{{candidates}}`,
+  system: `Role: Judge each buyer-facing prompt against its supplied plan, parent, and evidence.
+Score category specificity 0-15; persona and buyer-context fit 0-15; natural buyer language 0-15;
+funnel and parent-child coherence 0-20; answerability and SEO/GEO value 0-15; evidence support 0-10;
+and distinctiveness 0-10. Business-line and buyer-context fit are semantic: do not require literal
+repetition of internal labels. A consideration prompt must enable its parent decision; an awareness
+prompt must precede rather than repeat its parent. Report typed issues only for observable gaps.
+Use blocking issues for business-line, buyer-context, stage, parent coherence, natural-language,
+answer-value, evidence, or material intent-duplicate failures. Similarity alone is not blocking unless
+the supplied context marks a duplicate. Return exactly one assessment per candidate key and strict JSON.`,
+  user: `Project contract:\n{{project_context}}\n\nCandidates with planned cells, selected parents, bounded evidence, and similarity context:\n{{candidates}}`,
 };
 
 export function renderTemplate(template: PromptTemplate, values: Record<string, string>) {

@@ -19,11 +19,33 @@ test("seeded three-tab workflow and legacy 404", async ({ page }) => {
   await expect(workflow.getByRole("link", { name: /Query Funnels/ })).toBeVisible();
   await workflow.getByRole("link", { name: /Query Funnels/ }).click();
   await expect(page.getByRole("link", { name: /Download demo baseline/ })).toBeVisible();
+
+  const editorSummary = page.getByText("Edit or regenerate this prompt", { exact: true }).first();
+  const editor = editorSummary.locator("xpath=..");
+  await editorSummary.click();
+  const promptInput = editor.getByLabel("Prompt text");
+  const currentText = await promptInput.inputValue();
+  const draftText = `${currentText.replace(/\?$/, "")} with a new review constraint?`.slice(0, 500);
+  await promptInput.fill(draftText);
+  await editor.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText(/draft saved/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Latest quality draft" })).toBeVisible();
+  await expect(page.getByText(currentText, { exact: true }).first()).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: /Download demo baseline/ }).click();
+  const download = await downloadPromise;
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  const csv = await readFile(downloadPath!, "utf8");
+  expect(csv).toContain(currentText);
+  expect(csv).not.toContain(draftText);
+
   const legacy = await page.request.get("/brands/legacy");
   expect(legacy.status()).toBe(404);
 });
 
-test("create project, ingest several transcripts, generate, edit, fan out, and export", async ({
+test("create project, ingest transcripts, generate, edit, and preserve a failed draft", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -72,7 +94,7 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
     },
   ]);
   await page.getByRole("button", { name: "Upload and process" }).click();
-  await expect(page.getByText(/3 sources queued/i)).toBeVisible();
+  await expect(page.getByText(/3 sources (queued|uploaded and processed)/i)).toBeVisible();
 
   await expect
     .poll(
@@ -93,23 +115,25 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
   await page.getByRole("button", { name: "Save description" }).click();
   await expect(page.getByText(/audience description saved/i)).toBeVisible();
 
-  await page.getByRole("button", { name: "Generate personas" }).click();
-  await expect(page.getByText(/persona generation started/i)).toBeVisible();
+  await page.getByRole("button", { name: "Build personas" }).click();
+  await expect(page.getByText(/personas built from the latest brand evidence/i)).toBeVisible();
   await page.goto(`${projectPath}/personas`);
+  const personaHeadings = page.getByRole("heading", { level: 2 });
   await expect
     .poll(
       async () => {
         await page.reload();
-        return page.locator("details").count();
+        return personaHeadings.count();
       },
       { timeout: 90_000, message: "persona generation should publish three to five profiles" },
     )
     .toBeGreaterThanOrEqual(3);
-  expect(await page.locator("details").count()).toBeLessThanOrEqual(5);
-  await expect(page.getByText(/aggregate audience distributions/i).first()).toBeVisible();
+  expect(await personaHeadings.count()).toBeLessThanOrEqual(5);
+  await expect(page.getByText(/aggregate audience distributions/i).first()).toBeAttached();
 
-  const firstEditor = page.locator("details").first();
-  await firstEditor.locator("summary").click();
+  const firstEditorSummary = page.getByText(/Edit sections and create version \d+/i).first();
+  const firstEditor = firstEditorSummary.locator("xpath=..");
+  await firstEditorSummary.click();
   await firstEditor
     .getByLabel("Summary")
     .fill(
@@ -119,12 +143,14 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
   await expect(firstEditor.getByText(/new persona version saved/i)).toBeVisible();
 
   await page.goto(`${projectPath}/prompts`);
+  await page.getByText(/Advanced: edit funnel settings/i).click();
   await page.getByLabel("Parent company").fill("Example Holdings");
   await page.getByLabel("Competitors").fill("Example Rival\nExample Alternative");
   await page.getByRole("button", { name: "Save prompt strategy" }).click();
-  await expect(page.getByText(/prompt strategy saved/i)).toBeVisible();
-  await page.getByRole("button", { name: "Research market" }).click();
-  await expect(page.getByText(/market research refresh started/i)).toBeVisible();
+  await expect(page.getByText(/Query Funnel strategy saved/i)).toBeVisible();
+  await page.getByText(/Advanced: review persona grounding/i).click();
+  await page.getByRole("button", { name: "Build grounding brief" }).click();
+  await expect(page.getByText(/persona grounding refreshed/i)).toBeVisible();
   await expect
     .poll(
       async () => {
@@ -134,34 +160,12 @@ test("create project, ingest several transcripts, generate, edit, fan out, and e
       { timeout: 90_000, message: "market research should produce an approvable draft" },
     )
     .toBe(1);
+  await page.getByText(/Advanced: review persona grounding/i).click();
   await page.getByRole("button", { name: "Approve and freeze" }).click();
   await expect(page.getByText(/approved v\d+/i)).toBeVisible();
-  await page.getByRole("button", { name: "Generate demo baseline" }).click();
-  await expect(page.getByText(/prompt generation started/i)).toBeVisible();
-  await expect
-    .poll(
-      async () => {
-        await page.reload();
-        return page.getByText("latest completed").count();
-      },
-      { timeout: 90_000, message: "every active persona should receive a completed baseline" },
-    )
-    .toBeGreaterThanOrEqual(3);
-  await expect(page.getByText(/Bottom of funnel/).first()).toBeVisible();
-  await expect(page.getByText(/Top of funnel/).first()).toBeVisible();
-
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download demo baseline" }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/prompts\.csv$/);
-  const downloadPath = await download.path();
-  expect(downloadPath).not.toBeNull();
-  const csv = await readFile(downloadPath!, "utf8");
-  expect(csv.startsWith('\uFEFF"Baseline ID","Baseline Version","Persona","Pathway"')).toBe(true);
-  expect(csv.trim().split("\r\n")).toHaveLength(151);
-  expect(csv).toContain('"Prompt ID","Parent Prompt ID","Funnel Stage"');
-  expect(csv).toContain('"BOFU"');
-  expect(csv).toContain('"MOFU"');
-  expect(csv).toContain('"TOFU"');
-  expect(csv).toContain('"mock"');
+  await page.getByRole("button", { name: "Build demo Query Funnels" }).click();
+  await expect(page.getByText(/Query Funnels built and quality-checked/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Latest quality draft" })).toBeVisible();
+  await expect(page.getByText(/need revision/i).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /Download demo baseline/ })).toHaveCount(0);
 });
