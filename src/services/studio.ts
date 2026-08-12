@@ -26,7 +26,6 @@ import {
   buildAndApprovePersonaGroundingBrief,
   getApprovedMarketResearchBrief,
 } from "./market-research";
-import { approveCurrentPromptLibrary } from "./prompts";
 import { recordAudit } from "./audit";
 import { withVendorUsage } from "./usage";
 
@@ -279,7 +278,6 @@ export async function startPromptGeneration(
   if (finished?.status === "failed") {
     throw new ValidationError(finished.errorMessage ?? "Query Funnel generation failed.");
   }
-  await approveCurrentPromptLibrary(ctx);
   return runId;
 }
 

@@ -6,7 +6,7 @@ The product is organized around one simple project workflow:
 
 1. **Data** — upload PDF, DOCX, TXT, Markdown, CSV, or JSON files, or paste transcripts. Sources are parsed, redacted, and converted into research signals automatically.
 2. **Personas** — generate an adaptive set of 3–5 descriptive personas from completed sources and a full SparkToro audience report, then edit them as immutable versions.
-3. **Query Funnels** — approve a cited grounding brief, generate five BOFU anchors, fifteen MOFU evaluation questions, and thirty TOFU awareness questions per persona, review the linked pathways, and export a versioned baseline CSV.
+3. **Query Funnels** — approve a cited grounding brief, plan and generate five BOFU anchors, fifteen MOFU evaluation questions, and thirty TOFU awareness questions per persona, review typed quality findings in a protected draft, and export the current approved baseline CSV.
 
 Prompt execution, rank tracking, AI visibility reporting, audit decks, and performance reporting are intentionally outside this release. The exported baseline is designed to feed the team’s chosen SEO/GEO tracking workflow.
 
@@ -65,6 +65,6 @@ The project-first schema is a new initial schema, not a compatibility migration.
 
 The Next.js application and background worker share PostgreSQL. Server actions call tenant-scoped services; services use explicit adapters for storage, queues, OpenAI, and SparkToro. Live failures never fall back to mock data.
 
-Generated artifacts are immutable. Stable persona and prompt-set rows only switch their current-version pointers after a complete transaction succeeds, so a failed regeneration leaves the last completed result available.
+Generated artifacts are immutable. Query Funnel runs persist as drafts until every row passes the structural and semantic quality contract, then all affected prompt-set pointers switch in one transaction. Failed generation, editing, and regeneration never mutate the current approved baseline.
 
 See [architecture](docs/architecture.md), [data model](docs/data-model.md), [integrations](docs/integrations.md), and [security](docs/security.md).

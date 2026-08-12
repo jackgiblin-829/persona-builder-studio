@@ -4,9 +4,9 @@ Only OpenAI and SparkToro are configured at organization level in this release. 
 
 ## OpenAI
 
-Persona, signal, market-research, candidate-generation, and rubric-evaluation calls use the Responses API with strict JSON Schema Structured Outputs. Live market research enables the built-in web-search tool and stores the returned source URLs with the brief. Every result is validated again with Zod before it can be stored or published. A live request failure is surfaced and never replaced with mock output. Embeddings measure semantic similarity across candidates and selected prompts.
+Persona, signal, market-research, prompt-planning, stage-specific writing, targeted repair, and semantic-evaluation calls use the Responses API with strict JSON Schema Structured Outputs. Query Funnel planner, writer, evaluator, and repair templates are versioned independently. Live market research enables the built-in web-search tool and stores the returned source URLs with the brief. Every result is validated again with Zod before it can be stored or published. A live request failure is surfaced and never replaced with mock output. Embeddings measure semantic similarity across candidates and selected prompts, excluding ancestor pairs from duplicate blocking.
 
-Official references: <https://developers.openai.com/api/docs/guides/structured-outputs>, <https://developers.openai.com/api/docs/guides/tools-web-search>
+Official references: <https://developers.openai.com/api/docs/guides/structured-outputs>, <https://developers.openai.com/api/docs/guides/tools-web-search>, <https://developers.openai.com/api/docs/guides/latest-model>
 
 ## SparkToro
 

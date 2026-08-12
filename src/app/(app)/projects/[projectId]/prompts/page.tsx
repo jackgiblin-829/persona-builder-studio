@@ -37,7 +37,7 @@ import { getCsrfToken } from "@/lib/auth/session";
 import { listIntegrations } from "@/services/integrations";
 import { listActivePersonas } from "@/services/personas";
 import { getProjectWorkflowSummary } from "@/services/projects";
-import { listLatestPromptSets } from "@/services/prompts";
+import { listLatestPromptDraftSets, listLatestPromptSets } from "@/services/prompts";
 
 export const dynamic = "force-dynamic";
 
@@ -66,8 +66,9 @@ export default async function PromptsPage({
   const { projectId } = await params;
   const query = await searchParams;
   const ctx = await requireProjectAccess(projectId);
-  const [sets, activePersonas, summary, csrfToken, integrations] = await Promise.all([
+  const [sets, draftSets, activePersonas, summary, csrfToken, integrations] = await Promise.all([
     listLatestPromptSets(ctx),
+    listLatestPromptDraftSets(ctx),
     listActivePersonas(ctx),
     getProjectWorkflowSummary(ctx),
     getCsrfToken(),
@@ -80,6 +81,12 @@ export default async function PromptsPage({
   const totalPrompts = sets.reduce((total, set) => total + set.version.promptCount, 0);
   const totalClusters = sets.reduce((total, set) => total + set.version.clusterCount, 0);
   const promptRows = sets.flatMap((set) => set.clusters.flatMap((cluster) => cluster.prompts));
+  const draftPromptRows = draftSets.flatMap((set) =>
+    set.clusters.flatMap((cluster) => cluster.prompts),
+  );
+  const draftNeedsRevision = draftPromptRows.filter(
+    (prompt) => prompt.reviewStatus === "needs_revision",
+  );
   const approvedCount = promptRows.filter((prompt) => prompt.reviewStatus === "approved").length;
   const needsRevisionCount = promptRows.filter(
     (prompt) => prompt.reviewStatus === "needs_revision",
@@ -219,6 +226,97 @@ export default async function PromptsPage({
             {latest.errorMessage}. The previous completed sets are still active.
           </Callout>
         </div>
+      ) : null}
+      {draftSets.length ? (
+        <Card className="mb-5">
+          <CardHeader
+            title="Latest quality draft"
+            description="This run did not replace the current baseline. Repair the remaining cells; the complete draft will promote automatically only after every quality gate passes."
+            actions={
+              <Badge tone={draftNeedsRevision.length ? "warn" : "success"}>
+                {draftNeedsRevision.length
+                  ? `${draftNeedsRevision.length} need revision`
+                  : "ready to promote"}
+              </Badge>
+            }
+          />
+          <div className="space-y-3 p-4">
+            {draftSets.map((set) => {
+              const rows = set.clusters.flatMap((cluster) => cluster.prompts);
+              const failed = rows.filter((prompt) => prompt.reviewStatus === "needs_revision");
+              return (
+                <details key={set.version.id} className="rounded-lg border border-surface-border">
+                  <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-ink">
+                    {set.persona.name} · draft v{set.version.version} · {failed.length} issues
+                  </summary>
+                  <div className="space-y-3 border-t border-surface-border p-3">
+                    {failed.map((prompt) => (
+                      <div
+                        key={prompt.id}
+                        className="rounded-lg border border-surface-border bg-surface-sunken p-3"
+                      >
+                        <p className="text-sm leading-6 text-ink">{prompt.promptText}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {prompt.qualityIssues
+                            .filter((issue) => issue.blocking)
+                            .map((issue) => (
+                              <Badge key={`${prompt.id}-${issue.code}`} tone="warn">
+                                {issue.code.replaceAll("_", " ")}
+                              </Badge>
+                            ))}
+                        </div>
+                        {prompt.qualityIssues.length ? (
+                          <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-ink-muted">
+                            {prompt.qualityIssues.map((issue) => (
+                              <li key={`${prompt.id}-${issue.code}-${issue.message}`}>
+                                {issue.message}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {canGenerate ? (
+                          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                            <ActionForm
+                              action={editPromptAction}
+                              csrfToken={csrfToken}
+                              hidden={{ projectId, promptId: prompt.id }}
+                            >
+                              <Textarea
+                                name="promptText"
+                                defaultValue={prompt.promptText}
+                                rows={3}
+                                aria-label="Draft prompt text"
+                              />
+                              <SubmitButton
+                                label="Save draft edit"
+                                pendingLabel="Saving…"
+                                size="sm"
+                                variant="secondary"
+                              />
+                            </ActionForm>
+                            <ActionForm
+                              action={regeneratePromptAction}
+                              csrfToken={csrfToken}
+                              hidden={{ projectId, promptId: prompt.id }}
+                              className="space-y-0"
+                            >
+                              <SubmitButton
+                                label="Repair and rescore"
+                                pendingLabel="Repairing…"
+                                size="sm"
+                                variant="secondary"
+                              />
+                            </ActionForm>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        </Card>
       ) : null}
       <MetricStrip
         className="mb-5"

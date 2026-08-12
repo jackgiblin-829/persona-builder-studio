@@ -187,7 +187,7 @@ export async function generatePromptsAction(_previous: ActionState, formData: Fo
     return {
       status: "ok",
       message:
-        "Query Funnels built, quality-checked, and approved where they passed the quality gate.",
+        "Query Funnels built and quality-checked. Fully passing runs are current; unresolved cells remain in a protected draft.",
     };
   });
 }
@@ -258,7 +258,11 @@ export async function regeneratePromptAction(_previous: ActionState, formData: F
     const ctx = await requireProjectAccess(input.projectId);
     await regenerateSinglePrompt(ctx, input.promptId);
     revalidatePath(`/projects/${input.projectId}/prompts`);
-    return { status: "ok", message: "This funnel cell was regenerated and rescored." };
+    return {
+      status: "ok",
+      message:
+        "This funnel cell and any descendants were repaired and rescored. A fully passing draft is promoted automatically.",
+    };
   });
 }
 

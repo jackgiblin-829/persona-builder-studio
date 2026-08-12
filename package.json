@@ -26,6 +26,7 @@
     "test:integration": "npm run db:reset -- --test && npm run db:migrate -- --test && vitest run tests/integration",
     "test:watch": "vitest",
     "test:e2e": "npm run db:reset -- --test && npm run db:migrate -- --test && npm run db:seed -- --test && playwright test",
+    "eval:query-funnel:live": "NODE_OPTIONS=--conditions=react-server tsx scripts/run-query-funnel-live-eval.ts",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {

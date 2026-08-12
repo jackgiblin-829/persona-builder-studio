@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { closeDb, db } from "@/db/client";
 import {
   generationRuns,
+  generatedPrompts,
   jobs,
   organizations,
   personas,
   personaVersionSignals,
   projects,
   promptSets,
+  promptSetVersions,
   researchSignals,
   sparkReports,
   sparkReportSections,
@@ -17,7 +19,7 @@ import { materializeSparkSignals } from "@/jobs/handlers/generate-personas";
 import type { ProjectContext } from "@/lib/auth/context";
 import { runSeed } from "@/seed/run";
 import { getProject, listProjectsForSession } from "@/services/projects";
-import { buildPromptBaselineCsv } from "@/services/prompts";
+import { buildPromptBaselineCsv, editPromptText, tryPromoteDraftVersion } from "@/services/prompts";
 import { createSourceFromTranscript } from "@/services/sources";
 import { savePersonaVersion, startPersonaGeneration } from "@/services/studio";
 
@@ -236,6 +238,51 @@ describe("persona versioning and prompt refresh", () => {
           .where(eq(promptSets.personaId, before!.id))
           .limit(1)
       )[0]?.value,
+    ).toBe(priorPromptPointer);
+
+    const [draft] = await db
+      .select()
+      .from(promptSetVersions)
+      .where(eq(promptSetVersions.lifecycleStatus, "draft"))
+      .limit(1);
+    expect(draft).toBeTruthy();
+    expect(draft?.generationRunId).toBeTruthy();
+    const runDrafts = await db
+      .select()
+      .from(promptSetVersions)
+      .where(eq(promptSetVersions.generationRunId, draft!.generationRunId!));
+    await db
+      .update(generatedPrompts)
+      .set({
+        qualityScore: 92,
+        rubricScores: {
+          categorySpecificity: 14,
+          personaContextFit: 14,
+          naturalBuyerLanguage: 14,
+          funnelCoherence: 18,
+          answerValue: 14,
+          evidenceSupport: 9,
+          distinctiveness: 9,
+          total: 92,
+        },
+        qualityIssues: [],
+        reviewStatus: "ready",
+      })
+      .where(
+        inArray(
+          generatedPrompts.promptSetVersionId,
+          runDrafts.map((item) => item.id),
+        ),
+      );
+    expect(await tryPromoteDraftVersion(editor, draft!.id)).toBe(true);
+    expect(
+      (
+        await db
+          .select({ value: promptSets.currentVersionId })
+          .from(promptSets)
+          .where(eq(promptSets.personaId, before!.id))
+          .limit(1)
+      )[0]?.value,
     ).not.toBe(priorPromptPointer);
 
     const refreshedRuns = await db
@@ -273,5 +320,70 @@ describe("persona versioning and prompt refresh", () => {
     );
     expect(personaJobs).toHaveLength(2);
     expect(personaJobs.every((job) => job.status === "succeeded")).toBe(true);
+  });
+
+  it("creates a draft before editing a current prompt", async () => {
+    const [set] = await db
+      .select()
+      .from(promptSets)
+      .where(eq(promptSets.projectId, editor.projectId))
+      .limit(1);
+    expect(set?.currentVersionId).toBeTruthy();
+    const [currentPrompt] = await db
+      .select()
+      .from(generatedPrompts)
+      .where(
+        and(
+          eq(generatedPrompts.promptSetVersionId, set!.currentVersionId!),
+          eq(generatedPrompts.journeyStage, "decision"),
+        ),
+      )
+      .limit(1);
+    expect(currentPrompt).toBeTruthy();
+    const editedText = `${currentPrompt!.promptText.replace(/\?$/, "")} with a reviewer-specific constraint?`;
+    await editPromptText(editor, currentPrompt!.id, editedText.slice(0, 500));
+
+    const [unchangedCurrent] = await db
+      .select()
+      .from(generatedPrompts)
+      .where(eq(generatedPrompts.id, currentPrompt!.id))
+      .limit(1);
+    expect(unchangedCurrent?.promptText).toBe(currentPrompt!.promptText);
+    const [draft] = await db
+      .select()
+      .from(promptSetVersions)
+      .where(eq(promptSetVersions.promptSetId, set!.id))
+      .orderBy(sql`${promptSetVersions.createdAt} desc`)
+      .limit(1);
+    expect(draft?.lifecycleStatus).toBe("draft");
+    const [editedDraft] = await db
+      .select()
+      .from(generatedPrompts)
+      .where(
+        and(
+          eq(generatedPrompts.promptSetVersionId, draft!.id),
+          eq(generatedPrompts.coverageKey, currentPrompt!.coverageKey),
+        ),
+      )
+      .limit(1);
+    expect(editedDraft?.promptText).toBe(editedText.slice(0, 500));
+    const directChildren = await db
+      .select()
+      .from(generatedPrompts)
+      .where(
+        and(
+          eq(generatedPrompts.promptSetVersionId, draft!.id),
+          eq(generatedPrompts.parentCoverageKey, currentPrompt!.coverageKey),
+        ),
+      );
+    expect(directChildren.length).toBeGreaterThan(0);
+    expect(
+      directChildren.every(
+        (prompt) =>
+          prompt.reviewStatus === "needs_revision" &&
+          prompt.qualityIssues.some((issue) => issue.code === "parent_child_incoherent"),
+      ),
+    ).toBe(true);
+    expect(set?.currentVersionId).not.toBe(draft?.id);
   });
 });

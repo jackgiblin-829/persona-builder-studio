@@ -6,8 +6,17 @@ import {
   FUNNEL_STAGE_LABELS,
   strategyReadiness,
   type CoverageCell,
+  type FunnelStage,
   type PromptStrategy,
 } from "@/contracts/prompt-strategy";
+import {
+  hasPromptEvidence,
+  qualityIssue,
+  type PromptEvidencePacket,
+  type PromptGenerationMetrics,
+  type PromptPlanCell,
+  type PromptQualityIssue,
+} from "@/contracts/prompt-generation";
 import { db } from "@/db/client";
 import {
   generatedPrompts,
@@ -27,9 +36,16 @@ import { sha256 } from "@/lib/crypto";
 import { AppError } from "@/lib/errors";
 import { ID_PREFIXES, newId, slugify } from "@/lib/ids";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
-import { PROMPT_GENERATION, PROMPT_QUALITY_EVALUATION, renderTemplate } from "@/prompts/registry";
+import {
+  PROMPT_GENERATION,
+  PROMPT_PLANNING,
+  PROMPT_QUALITY_EVALUATION,
+  PROMPT_REPAIR,
+  renderTemplate,
+} from "@/prompts/registry";
 import {
   promptCandidateLibrarySchema,
+  promptPlanSchema,
   promptQualityEvaluationSchema,
   SCHEMA_VERSION,
   type PromptCandidateLibrary,
@@ -40,8 +56,10 @@ import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 
 const QUALITY_THRESHOLD = 80;
-const SEMANTIC_DUPLICATE_THRESHOLD = 0.86;
+const SEMANTIC_WARNING_THRESHOLD = 0.86;
+const SEMANTIC_DUPLICATE_THRESHOLD = 0.92;
 const MAX_REPAIR_ROUNDS = 2;
+const MAX_COVERAGE_RETRIES = 1;
 export const PROMPT_CELLS_PER_BATCH = 10;
 
 export type ActivePersona = {
@@ -52,14 +70,59 @@ type Candidate = PromptCandidateLibrary["candidates"][number];
 type Assessment = PromptQualityEvaluation["assessments"][number];
 export type EvaluatedPrompt = {
   candidate: Candidate;
+  cell: PromptPlanCell;
   scores: PromptRubricScores;
   explanation: string;
+  repairInstruction: string;
+  qualityIssues: PromptQualityIssue[];
+  /** Backward-compatible text projection used by older service callers. */
   hardFailures: string[];
   maximumSimilarity: number;
 };
 type SelectedPrompt = EvaluatedPrompt & {
   reviewStatus: "ready" | "needs_revision";
 };
+
+type PromptGenerationTrace = PromptGenerationMetrics & {
+  modelIdSet: Set<string>;
+  startedAtMs: number;
+};
+type GenerationContext = {
+  project: typeof projects.$inferSelect;
+  strategy: PromptStrategy;
+  brief: typeof marketResearchBriefs.$inferSelect;
+  active: ActivePersona[];
+  signals: (typeof researchSignals.$inferSelect)[];
+  adapter: OpenAIAdapter;
+  mode: "mock" | "live";
+  jobId: string;
+  trace: PromptGenerationTrace;
+};
+
+function createTrace(): PromptGenerationTrace {
+  return {
+    plannerCalls: 0,
+    writerCalls: 0,
+    evaluatorCalls: 0,
+    repairCalls: 0,
+    repairRounds: 0,
+    initialCellCount: 0,
+    initialPassCount: 0,
+    finalPassCount: 0,
+    durationMs: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    costCents: 0,
+    modelIds: [],
+    byTemplate: {},
+    modelIdSet: new Set(),
+    startedAtMs: Date.now(),
+  };
+}
+
+export function createPromptGenerationTrace() {
+  return createTrace();
+}
 
 registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
   const runId = String(job.payload.runId ?? "");
@@ -140,6 +203,7 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
     }
 
     const { adapter, mode } = await getOpenAIAdapter(project.organizationId);
+    const trace = createTrace();
     const context = {
       project,
       strategy,
@@ -149,51 +213,55 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
       adapter,
       mode,
       jobId: job.id,
+      trace,
     };
-    await updateRun(runId, { stage: "creating_prompts", progress: 25 });
-    let selected = selectBestByCell(
-      await generateAndEvaluateInBatches(context, blueprint, [], "initial"),
-      blueprint,
-    );
-
-    for (let round = 1; round <= MAX_REPAIR_ROUNDS; round++) {
-      selected = applyLibraryFailures(selected, blueprint);
-      const failedKeys = selected
-        .filter((prompt) => !passesQuality(prompt))
-        .map((prompt) => prompt.candidate.plan_key);
-      if (!failedKeys.length) break;
+    await updateRun(runId, { stage: "creating_clusters", progress: 18 });
+    const planned = await planPromptLibrary(context, blueprint);
+    await updateRun(runId, { stage: "creating_prompts", progress: 28 });
+    let selected: EvaluatedPrompt[] = [];
+    const stageProgress: Record<FunnelStage, number> = {
+      decision: 42,
+      consideration: 60,
+      awareness: 78,
+    };
+    for (const stage of ["decision", "consideration", "awareness"] as const) {
+      const stageCells = planned.filter((cell) => cell.funnelStage === stage);
+      const completed = await generateStageWithRepairs(
+        context,
+        stageCells,
+        selected,
+        planned,
+        stage,
+      );
+      selected = [...selected, ...completed];
       await updateRun(runId, {
-        stage: "validating",
-        progress: 45 + round * 18,
+        stage: "creating_prompts",
+        progress: stageProgress[stage],
         warnings: [
           ...run.warnings,
-          `Repair round ${round}: ${failedKeys.length} coverage cells below the quality gate.`,
+          ...(completed.some((prompt) => !passesQuality(prompt))
+            ? [`${stage}: one or more cells remain below the quality gate after targeted repair.`]
+            : []),
         ],
       });
-      const failedCells = blueprint.filter((cell) => failedKeys.includes(cell.key));
-      const fixed = selected.filter((prompt) => !failedKeys.includes(prompt.candidate.plan_key));
-      const repaired = selectBestByCell(
-        await generateAndEvaluateInBatches(context, failedCells, fixed, `repair_${round}`),
-        failedCells,
-      );
-      const repairedByKey = new Map(repaired.map((prompt) => [prompt.candidate.plan_key, prompt]));
-      selected = selected.map((prompt) => repairedByKey.get(prompt.candidate.plan_key) ?? prompt);
     }
 
-    const finalized: SelectedPrompt[] = applyLibraryFailures(selected, blueprint).map((prompt) => ({
+    const finalized: SelectedPrompt[] = applyLibraryFailures(selected, planned).map((prompt) => ({
       ...prompt,
       reviewStatus: passesQuality(prompt) ? "ready" : "needs_revision",
     }));
+    trace.finalPassCount = finalized.filter(passesQuality).length;
     await updateRun(runId, { stage: "validating", progress: 88 });
-    const versionIds = await persistPromptLibraryAtomically(project, runId, {
+    const persisted = await persistPromptLibraryAtomically(project, runId, {
       active,
       strategy,
-      blueprint,
+      blueprint: planned,
       selected: finalized,
       researchBriefId: brief.id,
-      modelProvider: finalized[0]?.candidate ? "openai" : mode,
-      modelId: mode === "mock" ? "mock:quality-pipeline" : "responses-api",
+      modelProvider: mode === "mock" ? "mock" : "openai",
+      modelId: [...trace.modelIdSet].join(", ") || (mode === "mock" ? "mock:gpt-4.1" : "gpt-4.1"),
       dataOrigin: mode,
+      metrics: finishTrace(trace),
     });
     const needsRevision = finalized.filter(
       (prompt) => prompt.reviewStatus === "needs_revision",
@@ -203,14 +271,20 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
       stage: "ready",
       progress: 100,
       warnings: needsRevision
-        ? [`${needsRevision} prompts need revision before the baseline can be exported.`]
+        ? [
+            `${needsRevision} prompts need revision. The run is saved as a draft and the previous baseline remains current.`,
+          ]
         : [],
-      resultingVersionIds: versionIds,
+      resultingVersionIds: persisted.versionIds,
       finishedAt: new Date(),
     });
     return {
       status: needsRevision ? "partially_succeeded" : "succeeded",
-      result: { promptSetVersionIds: versionIds, needsRevision },
+      result: {
+        promptSetVersionIds: persisted.versionIds,
+        needsRevision,
+        promoted: persisted.promoted,
+      },
     };
   } catch (error) {
     await updateRun(runId, {
@@ -223,11 +297,376 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
   }
 });
 
+type RepairFeedback = {
+  previousCandidate: Candidate;
+  issues: PromptQualityIssue[];
+  evaluatorExplanation: string;
+  repairInstruction: string;
+  nearestConflict: string;
+};
+
+function recordTrace(
+  trace: PromptGenerationTrace,
+  phase: "planner" | "writer" | "evaluator" | "repair",
+  value: {
+    modelId: string;
+    tokensIn: number;
+    tokensOut: number;
+    costCents: number;
+    durationMs: number;
+  },
+) {
+  if (phase === "planner") trace.plannerCalls++;
+  else if (phase === "writer") trace.writerCalls++;
+  else if (phase === "evaluator") trace.evaluatorCalls++;
+  else trace.repairCalls++;
+  trace.tokensIn += value.tokensIn;
+  trace.tokensOut += value.tokensOut;
+  trace.costCents += value.costCents;
+  trace.modelIdSet.add(value.modelId);
+  const template =
+    phase === "planner"
+      ? PROMPT_PLANNING
+      : phase === "writer"
+        ? PROMPT_GENERATION
+        : phase === "evaluator"
+          ? PROMPT_QUALITY_EVALUATION
+          : PROMPT_REPAIR;
+  const key = `${template.id}@${template.version}`;
+  const metric = trace.byTemplate[key] ?? {
+    calls: 0,
+    latencyMs: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    costCents: 0,
+    modelIds: [],
+  };
+  metric.calls++;
+  metric.latencyMs += value.durationMs;
+  metric.tokensIn += value.tokensIn;
+  metric.tokensOut += value.tokensOut;
+  metric.costCents += value.costCents;
+  if (!metric.modelIds.includes(value.modelId)) metric.modelIds.push(value.modelId);
+  trace.byTemplate[key] = metric;
+}
+
+function finishTrace(trace: PromptGenerationTrace): PromptGenerationMetrics {
+  return {
+    plannerCalls: trace.plannerCalls,
+    writerCalls: trace.writerCalls,
+    evaluatorCalls: trace.evaluatorCalls,
+    repairCalls: trace.repairCalls,
+    repairRounds: trace.repairRounds,
+    initialCellCount: trace.initialCellCount,
+    initialPassCount: trace.initialPassCount,
+    finalPassCount: trace.finalPassCount,
+    durationMs: Date.now() - trace.startedAtMs,
+    tokensIn: trace.tokensIn,
+    tokensOut: trace.tokensOut,
+    costCents: trace.costCents,
+    modelIds: [...trace.modelIdSet],
+    byTemplate: trace.byTemplate,
+  };
+}
+
+export function validateFunnelHierarchy(cells: CoverageCell[]) {
+  const byKey = new Map(cells.map((cell) => [cell.key, cell]));
+  for (const cell of cells) {
+    if (cell.funnelStage === "decision") {
+      if (cell.parentKey)
+        throw new AppError("schema_validation", `${cell.key} cannot have a parent.`);
+      continue;
+    }
+    const parent = cell.parentKey ? byKey.get(cell.parentKey) : null;
+    const expectedStage = cell.funnelStage === "consideration" ? "decision" : "consideration";
+    if (!parent || parent.funnelStage !== expectedStage) {
+      throw new AppError("schema_validation", `${cell.key} has an invalid parent.`);
+    }
+    if (
+      parent.personaSlug !== cell.personaSlug ||
+      parent.pathwayKey !== cell.pathwayKey ||
+      parent.businessLine !== cell.businessLine
+    ) {
+      throw new AppError(
+        "schema_validation",
+        `${cell.key} must stay in its parent's persona, pathway, and business line.`,
+      );
+    }
+  }
+  for (const personaSlug of new Set(cells.map((cell) => cell.personaSlug))) {
+    for (const parentStage of ["decision", "consideration"] as const) {
+      const parents = cells.filter(
+        (cell) => cell.personaSlug === personaSlug && cell.funnelStage === parentStage,
+      );
+      const childStage = parentStage === "decision" ? "consideration" : "awareness";
+      const childCounts = parents.map(
+        (parent) =>
+          cells.filter(
+            (cell) =>
+              cell.personaSlug === personaSlug &&
+              cell.funnelStage === childStage &&
+              cell.parentKey === parent.key,
+          ).length,
+      );
+      if (childCounts.length && Math.max(...childCounts) - Math.min(...childCounts) > 1) {
+        throw new AppError(
+          "schema_validation",
+          `${childStage} cells are not balanced across ${parentStage} parents.`,
+        );
+      }
+    }
+  }
+}
+
+export async function planPromptLibrary(context: GenerationContext, blueprint: CoverageCell[]) {
+  validateFunnelHierarchy(blueprint);
+  const planned: PromptPlanCell[] = [];
+  for (const active of context.active) {
+    const personaCells = blueprint.filter((cell) => cell.personaSlug === active.persona.slug);
+    if (!personaCells.length) continue;
+    const packet = compileEvidencePacket(context, active);
+    const schema = promptPlanSchema.extend({
+      cells: promptPlanSchema.shape.cells.length(personaCells.length),
+    });
+    const result = await withVendorUsage(
+      {
+        organizationId: context.project.organizationId,
+        projectId: context.project.id,
+        vendor: "openai",
+        operation: `prompt_plan_${active.persona.slug}`,
+        mode: context.mode,
+        jobId: context.jobId,
+      },
+      () =>
+        context.adapter.generateStructured({
+          templateId: PROMPT_PLANNING.id,
+          templateVersion: PROMPT_PLANNING.version,
+          schemaVersion: SCHEMA_VERSION,
+          system: PROMPT_PLANNING.system,
+          user: renderTemplate(PROMPT_PLANNING, {
+            project_context: JSON.stringify(projectContract(context)),
+            evidence_packet: JSON.stringify(packet),
+            coverage_blueprint: JSON.stringify(personaCells),
+          }),
+          schema,
+          schemaName: "QueryFunnelLogicalPlan",
+          jsonSchema: toStrictJsonSchema(schema, "QueryFunnelLogicalPlan"),
+          modelTier: PROMPT_PLANNING.modelTier,
+          mockContext: {
+            blueprint: personaCells,
+            strategy: context.strategy,
+            personaSlug: active.persona.slug,
+            personaName: active.version.name,
+            signals: packet.signals.map((signal) => ({
+              id: signal.id,
+              category: signal.category,
+              displayText: signal.text,
+            })),
+            factIds: packet.facts.map((fact) => fact.id),
+          },
+        }),
+      (value) => ({
+        retryCount: value.attempts - 1,
+        tokensIn: value.tokensIn,
+        tokensOut: value.tokensOut,
+        costCents: value.costCents,
+      }),
+    );
+    recordTrace(context.trace, "planner", result);
+    if (result.data.persona_slug !== active.persona.slug) {
+      throw new AppError("schema_validation", "The prompt plan changed the persona slug.");
+    }
+    const planByKey = new Map(result.data.cells.map((cell) => [cell.plan_key, cell]));
+    if (planByKey.size !== personaCells.length) {
+      throw new AppError(
+        "schema_validation",
+        "The prompt plan did not cover every cell exactly once.",
+      );
+    }
+    const allowedSignalIds = new Set(packet.signals.map((signal) => signal.id));
+    const allowedFactIds = new Set(packet.facts.map((fact) => fact.id));
+    const allowedEntities = new Set(
+      [
+        context.strategy.canonicalBrand,
+        context.strategy.parentCompany,
+        ...context.strategy.aliases,
+        ...context.strategy.entityCollisions,
+        ...context.strategy.competitors,
+      ]
+        .filter(Boolean)
+        .map(normalizePromptText),
+    );
+    for (const cell of personaCells) {
+      const semantic = planByKey.get(cell.key);
+      if (!semantic) throw new AppError("schema_validation", `Missing plan cell ${cell.key}.`);
+      const signalIds = semantic.signal_ids.filter((id) => allowedSignalIds.has(id));
+      const researchFactIds = semantic.research_fact_ids.filter((id) => allowedFactIds.has(id));
+      const permittedEntities = semantic.permitted_entities.filter((entity) =>
+        allowedEntities.has(normalizePromptText(entity)),
+      );
+      const hasEvidence = hasPromptEvidence(signalIds, researchFactIds);
+      planned.push({
+        ...cell,
+        buyerMoment: semantic.buyer_moment,
+        informationNeed: semantic.information_need,
+        stageObjective: semantic.stage_objective,
+        requiredConcepts: semantic.required_concepts,
+        permittedEntities,
+        signalIds,
+        researchFactIds,
+        parentReason: semantic.parent_reason,
+        evidenceStatus:
+          semantic.evidence_status === "supported" && hasEvidence
+            ? "supported"
+            : "insufficient_evidence",
+      });
+    }
+  }
+  return planned.sort((a, b) => a.sequence - b.sequence);
+}
+
+function compileEvidencePacket(
+  context: GenerationContext,
+  active: ActivePersona,
+): PromptEvidencePacket {
+  const referenced = collectSignalIds(active.version.profile);
+  const personaSignals = context.signals.filter(
+    (signal) => referenced.has(signal.id) && signal.confidence >= 0.6,
+  );
+  const rankedSignals = personaSignals.sort(
+    (left, right) =>
+      Number(referenced.has(right.id)) - Number(referenced.has(left.id)) ||
+      right.confidence - left.confidence,
+  );
+  return {
+    personaSlug: active.persona.slug,
+    personaName: active.version.name,
+    personaDescription: active.version.description,
+    personaSummary: active.version.profile.summary,
+    market: context.project.primaryMarket,
+    locale: context.project.languageLocale,
+    signals: rankedSignals.slice(0, 80).map((signal) => ({
+      id: signal.id,
+      category: signal.category,
+      text: signal.displayText,
+      confidence: signal.confidence,
+    })),
+    facts: context.brief.content.facts.slice(0, 80).map((fact) => ({
+      id: fact.id,
+      kind: fact.kind,
+      claim: fact.claim,
+    })),
+  };
+}
+
+function collectSignalIds(value: unknown, output = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSignalIds(item, output));
+  } else if (value && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === "signalIds" && Array.isArray(nested)) {
+        nested.forEach((id) => typeof id === "string" && output.add(id));
+      } else collectSignalIds(nested, output);
+    }
+  }
+  return output;
+}
+
+function projectContract(context: GenerationContext) {
+  return {
+    name: context.project.name,
+    domain: context.project.canonicalDomain,
+    description: context.project.description,
+    market: context.project.primaryMarket,
+    locale: context.project.languageLocale,
+    strategy: context.strategy,
+  };
+}
+
+async function generateStageWithRepairs(
+  context: GenerationContext,
+  cells: PromptPlanCell[],
+  fixed: EvaluatedPrompt[],
+  fullPlan: PromptPlanCell[],
+  stage: FunnelStage,
+) {
+  let selected = selectBestByCell(
+    await generateAndEvaluateInBatches(context, cells, fixed, `${stage}_initial`),
+    cells,
+  );
+  for (let round = 1; round <= MAX_REPAIR_ROUNDS; round++) {
+    const combined = applyLibraryFailures([...fixed, ...selected], fullPlan);
+    const combinedByKey = new Map(combined.map((prompt) => [prompt.candidate.plan_key, prompt]));
+    selected = selected.map((prompt) => combinedByKey.get(prompt.candidate.plan_key) ?? prompt);
+    if (round === 1) {
+      context.trace.initialCellCount += selected.length;
+      context.trace.initialPassCount += selected.filter(passesQuality).length;
+    }
+    const failed = selected.filter((prompt) => !passesQuality(prompt));
+    if (!failed.length) break;
+    context.trace.repairRounds = Math.max(context.trace.repairRounds, round);
+    const feedback = new Map<string, RepairFeedback>();
+    for (const prompt of failed) {
+      feedback.set(prompt.candidate.plan_key, {
+        previousCandidate: prompt.candidate,
+        issues: prompt.qualityIssues,
+        evaluatorExplanation: prompt.explanation,
+        repairInstruction: prompt.repairInstruction,
+        nearestConflict: nearestConflictFor(prompt, [...fixed, ...selected]),
+      });
+    }
+    const failedKeys = new Set(failed.map((prompt) => prompt.candidate.plan_key));
+    const fixedForRepair = [
+      ...fixed,
+      ...selected.filter((prompt) => !failedKeys.has(prompt.candidate.plan_key)),
+    ];
+    const repaired = selectBestByCell(
+      await generateAndEvaluateInBatches(
+        context,
+        cells.filter((cell) => failedKeys.has(cell.key)),
+        fixedForRepair,
+        `${stage}_repair_${round}`,
+        feedback,
+      ),
+      cells.filter((cell) => failedKeys.has(cell.key)),
+    );
+    const repairedByKey = new Map(repaired.map((prompt) => [prompt.candidate.plan_key, prompt]));
+    selected = selected.map((prompt) => repairedByKey.get(prompt.candidate.plan_key) ?? prompt);
+  }
+  const finalCombined = applyLibraryFailures([...fixed, ...selected], fullPlan);
+  const finalByKey = new Map(finalCombined.map((prompt) => [prompt.candidate.plan_key, prompt]));
+  return selected.map((prompt) => finalByKey.get(prompt.candidate.plan_key) ?? prompt);
+}
+
+function nearestConflictFor(prompt: EvaluatedPrompt, library: EvaluatedPrompt[]) {
+  return (
+    library
+      .filter(
+        (candidate) =>
+          candidate.candidate.plan_key !== prompt.candidate.plan_key &&
+          !isAncestorPair(
+            prompt.cell,
+            candidate.cell,
+            library.map((item) => item.cell),
+          ),
+      )
+      .map((candidate) => ({
+        text: candidate.candidate.prompt_text,
+        similarity: semanticSimilarity(
+          prompt.candidate.prompt_text,
+          candidate.candidate.prompt_text,
+        ),
+      }))
+      .sort((left, right) => right.similarity - left.similarity)[0]?.text ?? ""
+  );
+}
+
 async function generateAndEvaluateInBatches(
-  context: Parameters<typeof generateAndEvaluate>[0],
-  cells: CoverageCell[],
+  context: GenerationContext,
+  cells: PromptPlanCell[],
   fixed: EvaluatedPrompt[],
   operation: string,
+  repairFeedback?: Map<string, RepairFeedback>,
 ) {
   const evaluated: EvaluatedPrompt[] = [];
   const batches = buildPromptGenerationBatches(cells);
@@ -238,14 +677,15 @@ async function generateAndEvaluateInBatches(
       batch,
       [...fixed, ...evaluated],
       `${operation}_${index + 1}`,
+      repairFeedback,
     );
     evaluated.push(...result);
   }
   return evaluated;
 }
 
-export function buildPromptGenerationBatches(cells: CoverageCell[]): CoverageCell[][] {
-  const batches: CoverageCell[][] = [];
+export function buildPromptGenerationBatches<T extends CoverageCell>(cells: T[]): T[][] {
+  const batches: T[][] = [];
   for (const personaSlug of new Set(cells.map((cell) => cell.personaSlug))) {
     const personaCells = cells.filter((cell) => cell.personaSlug === personaSlug);
     for (let index = 0; index < personaCells.length; index += PROMPT_CELLS_PER_BATCH) {
@@ -268,94 +708,96 @@ export function promptQualityEvaluationSchemaForBatch(candidateCount: number) {
 }
 
 export async function generateAndEvaluate(
-  context: {
-    project: typeof projects.$inferSelect;
-    strategy: PromptStrategy;
-    brief: typeof marketResearchBriefs.$inferSelect;
-    active: ActivePersona[];
-    signals: (typeof researchSignals.$inferSelect)[];
-    adapter: OpenAIAdapter;
-    mode: "mock" | "live";
-    jobId: string;
-  },
-  cells: CoverageCell[],
+  context: GenerationContext,
+  cells: PromptPlanCell[],
   fixed: EvaluatedPrompt[],
   operation: string,
+  repairFeedback?: Map<string, RepairFeedback>,
 ) {
   const candidateSchema = promptCandidateLibrarySchemaForBatch(cells.length);
-  const projectContext = JSON.stringify({
-    name: context.project.name,
-    domain: context.project.canonicalDomain,
-    description: context.project.description,
-    market: context.project.primaryMarket,
-    locale: context.project.languageLocale,
-    promptStrategy: context.strategy,
+  const generationContext = cells.map((cell) => {
+    const feedback = repairFeedback?.get(cell.key);
+    return {
+      plan: cell,
+      selected_parent: cell.parentKey
+        ? (fixed.find((prompt) => prompt.candidate.plan_key === cell.parentKey)?.candidate
+            .prompt_text ?? null)
+        : null,
+      evidence: evidenceForCell(context, cell),
+      ...(feedback
+        ? {
+            previous_candidate: feedback.previousCandidate,
+            issues: feedback.issues,
+            evaluator_explanation: feedback.evaluatorExplanation,
+            repair_instruction: feedback.repairInstruction,
+            nearest_conflicting_prompt: feedback.nearestConflict || null,
+          }
+        : {}),
+    };
   });
-  const personaContext = JSON.stringify(
-    context.active.map((item) => ({
-      slug: item.persona.slug,
-      name: item.version.name,
-      description: item.version.description,
-      profile: item.version.profile,
-    })),
-  );
-  const signalContext = JSON.stringify(
-    context.signals.map((signal) => ({
-      id: signal.id,
-      category: signal.category,
-      text: signal.displayText,
-      confidence: signal.confidence,
-      provenance: signal.provenance,
-    })),
-  );
-  const generated = await withVendorUsage(
-    {
-      organizationId: context.project.organizationId,
-      projectId: context.project.id,
-      vendor: "openai",
-      operation: `prompt_candidates_${operation}`,
-      mode: context.mode,
-      jobId: context.jobId,
-    },
-    () =>
-      context.adapter.generateStructured({
-        templateId: PROMPT_GENERATION.id,
-        templateVersion: PROMPT_GENERATION.version,
-        schemaVersion: SCHEMA_VERSION,
-        system: PROMPT_GENERATION.system,
-        user: renderTemplate(PROMPT_GENERATION, {
-          project_context: projectContext,
-          market_brief: JSON.stringify(context.brief.content),
-          persona_profiles: personaContext,
-          coverage_blueprint: JSON.stringify(cells),
-          research_signals: signalContext,
+  const template = repairFeedback ? PROMPT_REPAIR : PROMPT_GENERATION;
+  const baseUserPrompt = renderTemplate(template, {
+    project_context: JSON.stringify(projectContract(context)),
+    generation_context: JSON.stringify(generationContext),
+    repair_context: JSON.stringify(generationContext),
+  });
+  const requestCandidates = async (coverageAttempt: number) => {
+    const generated = await withVendorUsage(
+      {
+        organizationId: context.project.organizationId,
+        projectId: context.project.id,
+        vendor: "openai",
+        operation: `prompt_candidates_${operation}${coverageAttempt ? `_coverage_retry_${coverageAttempt}` : ""}`,
+        mode: context.mode,
+        jobId: context.jobId,
+      },
+      () =>
+        context.adapter.generateStructured({
+          templateId: template.id,
+          templateVersion: template.version,
+          schemaVersion: SCHEMA_VERSION,
+          system: template.system,
+          user: coverageAttempt
+            ? `${baseUserPrompt}\n\nCoverage correction: return exactly two candidates for each of these plan keys and no others: ${cells.map((cell) => cell.key).join(", ")}. Keep every plan_key unchanged.`
+            : baseUserPrompt,
+          schema: candidateSchema,
+          schemaName: "GroundedPromptCandidateLibrary",
+          jsonSchema: toStrictJsonSchema(candidateSchema, "GroundedPromptCandidateLibrary"),
+          modelTier: template.modelTier,
+          mockContext: {
+            strategy: context.strategy,
+            blueprint: cells,
+            personaNames: Object.fromEntries(
+              context.active.map((item) => [item.persona.slug, item.version.name]),
+            ),
+            signals: context.signals.map((signal) => ({
+              id: signal.id,
+              category: signal.category,
+              displayText: signal.displayText,
+            })),
+            factIds: context.brief.content.facts.map((fact) => fact.id),
+          },
         }),
-        schema: candidateSchema,
-        schemaName: "GroundedPromptCandidateLibrary",
-        jsonSchema: toStrictJsonSchema(candidateSchema, "GroundedPromptCandidateLibrary"),
-        modelTier: PROMPT_GENERATION.modelTier,
-        mockContext: {
-          strategy: context.strategy,
-          blueprint: cells,
-          personaNames: Object.fromEntries(
-            context.active.map((item) => [item.persona.slug, item.version.name]),
-          ),
-          signals: context.signals.map((signal) => ({
-            id: signal.id,
-            category: signal.category,
-            displayText: signal.displayText,
-          })),
-          factIds: context.brief.content.facts.map((fact) => fact.id),
-        },
+      (value) => ({
+        retryCount: value.attempts - 1,
+        tokensIn: value.tokensIn,
+        tokensOut: value.tokensOut,
+        costCents: value.costCents,
       }),
-    (value) => ({
-      retryCount: value.attempts - 1,
-      tokensIn: value.tokensIn,
-      tokensOut: value.tokensOut,
-      costCents: value.costCents,
-    }),
-  );
-  validateCandidateCoverage(generated.data.candidates, cells);
+    );
+    recordTrace(context.trace, repairFeedback ? "repair" : "writer", generated);
+    return generated;
+  };
+  let generated = await requestCandidates(0);
+  for (let coverageAttempt = 0; ; coverageAttempt++) {
+    try {
+      validateCandidateCoverage(generated.data.candidates, cells);
+      break;
+    } catch (error) {
+      if (coverageAttempt >= MAX_COVERAGE_RETRIES || !(error instanceof AppError)) throw error;
+      generated = await requestCandidates(coverageAttempt + 1);
+    }
+  }
   const candidateTexts = generated.data.candidates.map((candidate) => candidate.prompt_text);
   const fixedTexts = fixed.map((prompt) => prompt.candidate.prompt_text);
   const embedded = await withVendorUsage(
@@ -373,23 +815,38 @@ export async function generateAndEvaluate(
   const candidateVectors = embedded.embeddings.slice(0, candidateTexts.length);
   const maximumSimilarities = candidateVectors.map((vector, index) => {
     const candidate = generated.data.candidates[index]!;
+    const candidateCell = cells.find((cell) => cell.key === candidate.plan_key)!;
     let maximum = 0;
     for (let other = 0; other < embedded.embeddings.length; other++) {
       if (other === index) continue;
-      if (
-        other < generated.data.candidates.length &&
-        generated.data.candidates[other]!.plan_key === candidate.plan_key
-      ) {
+      const otherCell =
+        other < generated.data.candidates.length
+          ? cells.find((cell) => cell.key === generated.data.candidates[other]!.plan_key)
+          : fixed[other - generated.data.candidates.length]?.cell;
+      if (!otherCell || otherCell.key === candidate.plan_key) continue;
+      if (isAncestorPair(candidateCell, otherCell, [...cells, ...fixed.map((item) => item.cell)]))
         continue;
-      }
       maximum = Math.max(maximum, cosineSimilarity(vector, embedded.embeddings[other]!));
     }
     return maximum;
   });
   const evaluationInput = generated.data.candidates.map((candidate, index) => ({
     ...candidate,
-    coverage_cell: cells.find((cell) => cell.key === candidate.plan_key),
+    planned_cell: cells.find((cell) => cell.key === candidate.plan_key),
+    selected_parent: cells.find((cell) => cell.key === candidate.plan_key)?.parentKey
+      ? (fixed.find(
+          (prompt) =>
+            prompt.candidate.plan_key ===
+            cells.find((cell) => cell.key === candidate.plan_key)?.parentKey,
+        )?.candidate.prompt_text ?? null)
+      : null,
+    evidence: evidenceForCell(
+      context,
+      cells.find((cell) => cell.key === candidate.plan_key)!,
+    ),
     maximum_semantic_similarity: maximumSimilarities[index],
+    similarity_requires_duplicate_review:
+      (maximumSimilarities[index] ?? 0) >= SEMANTIC_DUPLICATE_THRESHOLD,
   }));
   const evaluationSchema = promptQualityEvaluationSchemaForBatch(evaluationInput.length);
   const evaluated = await withVendorUsage(
@@ -410,7 +867,8 @@ export async function generateAndEvaluate(
         user: renderTemplate(PROMPT_QUALITY_EVALUATION, {
           project_context: JSON.stringify({
             strategy: context.strategy,
-            marketBrief: context.brief.content,
+            market: context.project.primaryMarket,
+            locale: context.project.languageLocale,
           }),
           candidates: JSON.stringify(evaluationInput),
         }),
@@ -427,6 +885,7 @@ export async function generateAndEvaluate(
       costCents: value.costCents,
     }),
   );
+  recordTrace(context.trace, "evaluator", evaluated);
   const assessmentMap = new Map(
     evaluated.data.assessments.map((assessment) => [assessment.candidate_key, assessment]),
   );
@@ -439,39 +898,55 @@ export async function generateAndEvaluate(
     const assessment = assessmentMap.get(candidate.candidate_key)!;
     const cell = cells.find((item) => item.key === candidate.plan_key)!;
     const scores = scoresFromAssessment(assessment);
+    const issues = dedupeIssues([
+      ...assessment.issues,
+      ...deterministicFailures(candidate, cell, context.strategy, allowedSignalIds, allowedFactIds),
+    ]);
     return {
       candidate,
+      cell,
       scores,
       explanation: assessment.explanation,
-      hardFailures: [
-        ...assessment.hard_fail_reasons,
-        ...deterministicFailures(
-          candidate,
-          cell,
-          context.strategy,
-          allowedSignalIds,
-          allowedFactIds,
-        ),
-      ],
+      repairInstruction: assessment.repair_instruction,
+      qualityIssues: issues,
+      hardFailures: issues.filter((issue) => issue.blocking).map((issue) => issue.message),
       maximumSimilarity: maximumSimilarities[index] ?? 0,
     };
   });
 }
 
+function evidenceForCell(context: GenerationContext, cell: PromptPlanCell) {
+  const signalIds = new Set(cell.signalIds);
+  const factIds = new Set(cell.researchFactIds);
+  return {
+    signals: context.signals
+      .filter((signal) => signalIds.has(signal.id))
+      .map((signal) => ({
+        id: signal.id,
+        category: signal.category,
+        text: signal.displayText,
+        confidence: signal.confidence,
+      })),
+    facts: context.brief.content.facts
+      .filter((fact) => factIds.has(fact.id))
+      .map((fact) => ({ id: fact.id, kind: fact.kind, claim: fact.claim })),
+  };
+}
+
 function scoresFromAssessment(assessment: Assessment): PromptRubricScores {
   const scores = {
     categorySpecificity: assessment.category_specificity,
-    personaQualifierFit: assessment.persona_qualifier_fit,
+    personaContextFit: assessment.persona_context_fit,
     naturalBuyerLanguage: assessment.natural_buyer_language,
-    measurementValue: assessment.measurement_value,
-    researchSupport: assessment.research_support,
+    funnelCoherence: assessment.funnel_coherence,
+    answerValue: assessment.answer_value,
+    evidenceSupport: assessment.evidence_support,
     distinctiveness: assessment.distinctiveness,
-    metadataCompleteness: assessment.metadata_completeness,
   };
   return { ...scores, total: Object.values(scores).reduce((sum, value) => sum + value, 0) };
 }
 
-function validateCandidateCoverage(candidates: Candidate[], cells: CoverageCell[]) {
+export function validateCandidateCoverage(candidates: Candidate[], cells: CoverageCell[]) {
   if (candidates.length !== cells.length * 2) {
     throw new AppError(
       "schema_validation",
@@ -492,7 +967,10 @@ export function selectBestByCell(evaluated: EvaluatedPrompt[], cells: CoverageCe
       .filter((prompt) => prompt.candidate.plan_key === cell.key)
       .sort(
         (a, b) =>
-          Number(a.hardFailures.length > 0) - Number(b.hardFailures.length > 0) ||
+          Number(a.qualityIssues.some((issue) => issue.blocking)) -
+            Number(b.qualityIssues.some((issue) => issue.blocking)) ||
+          Number(a.scores.funnelCoherence < 16 || a.scores.evidenceSupport < 8) -
+            Number(b.scores.funnelCoherence < 16 || b.scores.evidenceSupport < 8) ||
           b.scores.total - a.scores.total ||
           a.maximumSimilarity - b.maximumSimilarity,
       );
@@ -502,22 +980,44 @@ export function selectBestByCell(evaluated: EvaluatedPrompt[], cells: CoverageCe
 }
 
 export function applyLibraryFailures(selected: EvaluatedPrompt[], blueprint: CoverageCell[]) {
-  const failures = new Map<string, string[]>();
-  const addFailure = (key: string, message: string) =>
-    failures.set(key, [...(failures.get(key) ?? []), message]);
+  const libraryCodes = new Set([
+    "exact_duplicate",
+    "semantic_duplicate",
+    "semantic_similarity_warning",
+    "repeated_opening",
+  ]);
+  const issues = new Map<string, PromptQualityIssue[]>();
+  const addIssue = (key: string, issue: PromptQualityIssue) =>
+    issues.set(key, [...(issues.get(key) ?? []), issue]);
   const normalized = new Map<string, string>();
   selected.forEach((prompt) => {
     const value = normalizePromptText(prompt.candidate.prompt_text);
     const duplicate = normalized.get(value);
-    if (duplicate) addFailure(prompt.candidate.plan_key, `Exact duplicate of ${duplicate}.`);
+    if (duplicate)
+      addIssue(
+        prompt.candidate.plan_key,
+        qualityIssue("exact_duplicate", `Exact duplicate of ${duplicate}.`),
+      );
     else normalized.set(value, prompt.candidate.plan_key);
   });
   const openings = new Map<string, EvaluatedPrompt[]>();
   for (const prompt of selected) {
     if (prompt.maximumSimilarity >= SEMANTIC_DUPLICATE_THRESHOLD) {
-      addFailure(
+      addIssue(
         prompt.candidate.plan_key,
-        `Embedding similarity ${prompt.maximumSimilarity.toFixed(3)} exceeds ${SEMANTIC_DUPLICATE_THRESHOLD}.`,
+        qualityIssue(
+          "semantic_duplicate",
+          `Non-ancestor similarity ${prompt.maximumSimilarity.toFixed(3)} exceeds ${SEMANTIC_DUPLICATE_THRESHOLD}.`,
+        ),
+      );
+    } else if (prompt.maximumSimilarity >= SEMANTIC_WARNING_THRESHOLD) {
+      addIssue(
+        prompt.candidate.plan_key,
+        qualityIssue(
+          "semantic_similarity_warning",
+          `Similarity ${prompt.maximumSimilarity.toFixed(3)} needs review but is not blocking by itself.`,
+          false,
+        ),
       );
     }
     const opening = normalizePromptText(prompt.candidate.prompt_text)
@@ -531,24 +1031,68 @@ export function applyLibraryFailures(selected: EvaluatedPrompt[], blueprint: Cov
     rows
       .sort((a, b) => b.scores.total - a.scores.total)
       .slice(openingLimit)
-      .forEach((prompt) => addFailure(prompt.candidate.plan_key, "Repeated sentence opening."));
+      .forEach((prompt) =>
+        addIssue(
+          prompt.candidate.plan_key,
+          qualityIssue("repeated_opening", "Repeated sentence opening."),
+        ),
+      );
   }
   for (let left = 0; left < selected.length; left++) {
     for (let right = left + 1; right < selected.length; right++) {
       const a = selected[left]!;
       const b = selected[right]!;
-      if (semanticSimilarity(a.candidate.prompt_text, b.candidate.prompt_text) >= 0.9) {
+      if (isAncestorPair(a.cell, b.cell, blueprint)) continue;
+      const materiallyComparable =
+        a.cell.funnelStage === b.cell.funnelStage &&
+        normalizePromptText(a.cell.businessLine) === normalizePromptText(b.cell.businessLine);
+      if (
+        materiallyComparable &&
+        semanticSimilarity(a.candidate.prompt_text, b.candidate.prompt_text) >= 0.9
+      ) {
         const weaker = a.scores.total <= b.scores.total ? a : b;
-        addFailure(weaker.candidate.plan_key, "Near-duplicate wording in the selected baseline.");
+        addIssue(
+          weaker.candidate.plan_key,
+          qualityIssue("semantic_duplicate", "Near-duplicate intent in the selected baseline."),
+        );
       }
     }
   }
-  return selected.map((prompt) => ({
-    ...prompt,
-    hardFailures: [
-      ...new Set([...prompt.hardFailures, ...(failures.get(prompt.candidate.plan_key) ?? [])]),
-    ],
-  }));
+  return selected.map((prompt) => {
+    const merged = dedupeIssues([
+      ...prompt.qualityIssues.filter((issue) => !libraryCodes.has(issue.code)),
+      ...(issues.get(prompt.candidate.plan_key) ?? []),
+    ]);
+    return {
+      ...prompt,
+      qualityIssues: merged,
+      hardFailures: merged.filter((issue) => issue.blocking).map((issue) => issue.message),
+    };
+  });
+}
+
+function dedupeIssues(items: PromptQualityIssue[]) {
+  const seen = new Set<string>();
+  return items.filter((issue) => {
+    const key = `${issue.code}:${issue.message}:${issue.blocking}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isAncestorPair(left: CoverageCell, right: CoverageCell, blueprint: CoverageCell[]) {
+  if (left.personaSlug !== right.personaSlug) return false;
+  const byKey = new Map(blueprint.map((cell) => [cell.key, cell]));
+  const contains = (ancestor: string, child: CoverageCell) => {
+    let parentKey = child.parentKey;
+    while (parentKey) {
+      if (parentKey === ancestor) return true;
+      parentKey = byKey.get(parentKey)?.parentKey ?? null;
+    }
+    return false;
+  };
+  return contains(left.key, right) || contains(right.key, left);
 }
 
 function validateArchetypeDistribution(blueprint: CoverageCell[]) {
@@ -563,7 +1107,12 @@ function validateArchetypeDistribution(blueprint: CoverageCell[]) {
 }
 
 export function passesQuality(prompt: EvaluatedPrompt) {
-  return prompt.scores.total >= QUALITY_THRESHOLD && prompt.hardFailures.length === 0;
+  return (
+    prompt.scores.total >= QUALITY_THRESHOLD &&
+    prompt.scores.funnelCoherence >= 16 &&
+    prompt.scores.evidenceSupport >= 8 &&
+    !prompt.qualityIssues.some((issue) => issue.blocking)
+  );
 }
 
 export function normalizePromptText(value: string) {
@@ -597,20 +1146,14 @@ function includesTerm(text: string, term: string) {
   return normalizedTerm.length >= 2 && text.includes(normalizedTerm);
 }
 
-function qualifierCoverage(text: string, qualifier: string) {
-  const tokens = [...tokenSet(qualifier)];
-  if (!tokens.length) return true;
-  return tokens.filter((token) => text.includes(token)).length / tokens.length >= 0.6;
-}
-
 function deterministicFailures(
   prompt: Candidate,
-  cell: CoverageCell,
+  cell: CoverageCell | PromptPlanCell,
   strategy: PromptStrategy,
   allowedSignalIds: Set<string>,
   allowedFactIds: Set<string>,
 ) {
-  const failures: string[] = [];
+  const failures: PromptQualityIssue[] = [];
   const text = normalizePromptText(prompt.prompt_text);
   const brandTerms = [strategy.canonicalBrand, ...strategy.aliases].filter(Boolean);
   const disambiguators = [
@@ -619,34 +1162,56 @@ function deterministicFailures(
     ...strategy.entityCollisions,
   ].filter(Boolean);
   if (prompt.signal_ids.some((id) => !allowedSignalIds.has(id)))
-    failures.push("Unknown signal ID.");
+    failures.push(qualityIssue("unknown_signal", "Unknown signal ID."));
   if (prompt.research_fact_ids.some((id) => !allowedFactIds.has(id))) {
-    failures.push("Unknown research fact ID.");
+    failures.push(qualityIssue("unknown_research_fact", "Unknown research fact ID."));
   }
-  if (!prompt.signal_ids.length || !prompt.research_fact_ids.length) {
-    failures.push("Missing research support.");
+  if (!hasPromptEvidence(prompt.signal_ids, prompt.research_fact_ids)) {
+    failures.push(qualityIssue("missing_research_support", "Missing research support."));
+  }
+  if ("evidenceStatus" in cell && cell.evidenceStatus === "insufficient_evidence") {
+    failures.push(
+      qualityIssue(
+        "insufficient_evidence",
+        "The logical plan has insufficient evidence for this cell.",
+      ),
+    );
   }
   if (text.includes("when fit evidence risk and implementation effort all matter")) {
-    failures.push("Banned boilerplate.");
+    failures.push(qualityIssue("boilerplate", "Banned boilerplate."));
   }
   const mentionsBrand = brandTerms.some((term) => includesTerm(text, term));
-  if (cell.promptType === "unbranded" && mentionsBrand) failures.push("Brand leakage.");
+  if (cell.promptType === "unbranded" && mentionsBrand)
+    failures.push(qualityIssue("brand_leakage", "Brand leakage."));
   if (cell.promptType !== "unbranded" && !includesTerm(text, strategy.canonicalBrand)) {
-    failures.push("Missing canonical brand.");
+    failures.push(qualityIssue("missing_canonical_brand", "Missing canonical brand."));
   }
   if (cell.promptType === "competitor_comparative" && !includesTerm(text, cell.competitor)) {
-    failures.push("Missing assigned competitor.");
+    failures.push(qualityIssue("missing_competitor", "Missing assigned competitor."));
   }
   if (
     cell.promptType === "entity_disambiguation" &&
     disambiguators.length &&
     !disambiguators.some((term) => includesTerm(text, term))
   ) {
-    failures.push("Missing disambiguating entity.");
+    failures.push(qualityIssue("missing_disambiguating_entity", "Missing disambiguating entity."));
   }
-  if (!includesTerm(text, cell.businessLine)) failures.push("Missing business-line meaning.");
-  if (cell.buyerQualifier && !qualifierCoverage(text, cell.buyerQualifier)) {
-    failures.push("Missing buyer qualifier.");
+  const permittedCompetitors = new Set(
+    ("permittedEntities" in cell ? cell.permittedEntities : [cell.competitor])
+      .filter(Boolean)
+      .map(normalizePromptText),
+  );
+  const unsupportedCompetitor = strategy.competitors.find(
+    (competitor) =>
+      includesTerm(text, competitor) && !permittedCompetitors.has(normalizePromptText(competitor)),
+  );
+  if (unsupportedCompetitor) {
+    failures.push(
+      qualityIssue("unsupported_entity", `Unsupported competitor ${unsupportedCompetitor}.`),
+    );
+  }
+  if (cell.funnelStage !== "decision" && !cell.parentKey) {
+    failures.push(qualityIssue("invalid_parent", "Missing required parent cell."));
   }
   return failures;
 }
@@ -678,7 +1243,8 @@ export function validatePromptLibrary(
       allowedSignalIds,
       new Set(["fact-001"]),
     );
-    if (failures.length) throw new AppError("schema_validation", failures.join(" "));
+    if (failures.length)
+      throw new AppError("schema_validation", failures.map((failure) => failure.message).join(" "));
   }
 }
 
@@ -713,15 +1279,17 @@ async function persistPromptLibraryAtomically(
   built: {
     active: ActivePersona[];
     strategy: PromptStrategy;
-    blueprint: CoverageCell[];
+    blueprint: PromptPlanCell[];
     selected: SelectedPrompt[];
     researchBriefId: string;
     modelProvider: string;
     modelId: string;
     dataOrigin: "mock" | "live";
+    metrics: PromptGenerationMetrics;
   },
 ) {
   const versionIds: string[] = [];
+  const promoted = built.selected.every(passesQuality);
   const outputByKey = new Map(built.selected.map((prompt) => [prompt.candidate.plan_key, prompt]));
   await db.transaction(async (tx) => {
     for (const item of built.active) {
@@ -769,7 +1337,14 @@ async function persistPromptLibraryAtomically(
         modelProvider: built.modelProvider,
         modelId: built.modelId,
         dataOrigin: built.dataOrigin,
+        lifecycleStatus: promoted ? "current" : "draft",
         researchBriefId: built.researchBriefId,
+        plannerPromptVersion: PROMPT_PLANNING.version,
+        writerPromptVersion: PROMPT_GENERATION.version,
+        evaluatorPromptVersion: PROMPT_QUALITY_EVALUATION.version,
+        repairPromptVersion: PROMPT_REPAIR.version,
+        schemaVersion: SCHEMA_VERSION,
+        generationMetrics: built.metrics,
         strategySnapshot: built.strategy,
         qualitySummary: qualitySummary(personaCells.map((cell) => outputByKey.get(cell.key)!)),
       });
@@ -791,9 +1366,10 @@ async function persistPromptLibraryAtomically(
           title: group.label,
           slug: slugify(group.pathwayKey),
           seedTopic: group.cells[0]!.businessLine,
-          informationNeed: `${item.version.name} moves from ${FUNNEL_STAGE_LABELS.decision.toLowerCase()} selection questions through evaluation and awareness for ${group.cells[0]!.businessLine}.`,
-          rationale:
-            "This Query Funnel pathway begins with a conversion-adjacent anchor and projects upward using the approved persona and evidence brief.",
+          informationNeed:
+            group.cells.find((cell) => cell.funnelStage === "decision")?.informationNeed ??
+            `${item.version.name} evaluates ${group.cells[0]!.businessLine}.`,
+          rationale: `This pathway starts with ${FUNNEL_STAGE_LABELS.decision.toLowerCase()} anchors and connects each evaluation and awareness need to a selected parent using the approved persona evidence.`,
           signalIds: groupSignalIds,
         });
 
@@ -827,9 +1403,10 @@ async function persistPromptLibraryAtomically(
             qualityScore: selected.scores.total,
             rubricScores: selected.scores,
             evaluatorExplanation: [selected.explanation, ...selected.hardFailures].join(" "),
+            qualityIssues: selected.qualityIssues,
             researchFactIds: prompt.research_fact_ids,
             maximumSimilarity: selected.maximumSimilarity,
-            reviewStatus: selected.reviewStatus,
+            reviewStatus: promoted ? "approved" : selected.reviewStatus,
             expectedAnswerElements: prompt.expected_answer_elements,
             signalIds: prompt.signal_ids,
           });
@@ -843,14 +1420,22 @@ async function persistPromptLibraryAtomically(
           }
         }
       }
-      await tx
-        .update(promptSets)
-        .set({ currentVersionId: versionId, updatedAt: new Date() })
-        .where(eq(promptSets.id, set.id));
+      if (promoted) {
+        if (set.currentVersionId) {
+          await tx
+            .update(promptSetVersions)
+            .set({ lifecycleStatus: "superseded" })
+            .where(eq(promptSetVersions.id, set.currentVersionId));
+        }
+        await tx
+          .update(promptSets)
+          .set({ currentVersionId: versionId, updatedAt: new Date() })
+          .where(eq(promptSets.id, set.id));
+      }
       versionIds.push(versionId);
     }
   });
-  return versionIds;
+  return { versionIds, promoted };
 }
 
 async function updateRun(id: string, values: Partial<typeof generationRuns.$inferInsert>) {
