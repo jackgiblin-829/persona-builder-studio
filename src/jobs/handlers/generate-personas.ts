@@ -22,10 +22,10 @@ import {
 } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { ID_PREFIXES, newId } from "@/lib/ids";
+import { sparkReportHash } from "@/lib/sparktoro-report";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
 import { PERSONA_GENERATION, renderTemplate } from "@/prompts/registry";
 import { personaGenerationSchema, SCHEMA_VERSION, type PersonaGeneration } from "@/prompts/schemas";
-import { sparkReportHash } from "@/services/studio";
 import { withVendorUsage } from "@/services/usage";
 import { JOB_TYPES, registerJob } from "../registry";
 
@@ -133,15 +133,29 @@ registerJob(JOB_TYPES.generatePersonas, async ({ job }) => {
         costCents: value.costCents,
       }),
     );
-    validatePersonaReferences(
+    const sanitized = sanitizePersonaReferences(
       result.data,
+      signals.map((signal) => ({ id: signal.id, category: signal.category })),
+    );
+    if (sanitized.removedReferences) {
+      warnings.push(
+        `Removed ${sanitized.removedReferences} unsupported evidence reference${sanitized.removedReferences === 1 ? "" : "s"} returned by OpenAI.`,
+      );
+    }
+    if (sanitized.droppedInsights) {
+      warnings.push(
+        `Omitted ${sanitized.droppedInsights} insight${sanitized.droppedInsights === 1 ? "" : "s"} that had no valid supporting evidence.`,
+      );
+    }
+    validatePersonaReferences(
+      sanitized.output,
       signals.map((signal) => ({ id: signal.id, category: signal.category })),
     );
     await updateRun(runId, { stage: "creating_personas", progress: 86 });
     const versionIds = await atomicallyReplacePersonas({
       project,
       runId,
-      output: result.data,
+      output: sanitized.output,
       modelProvider: result.modelProvider,
       modelId: result.modelId,
       dataOrigin: result.dataOrigin,
@@ -183,10 +197,12 @@ async function getOrCreateFullSparkReport(
   warnings: string[],
   onProgress: (value: number) => Promise<void>,
 ) {
+  const { adapter, mode } = await getSparktoroAdapter(project.organizationId);
   const inputHash = sparkReportHash(
     project.sparktoroAudienceDescription,
     project.primaryMarket,
     project.languageLocale,
+    mode,
   );
   const [cached] = await db
     .select()
@@ -199,7 +215,6 @@ async function getOrCreateFullSparkReport(
       ),
     )
     .limit(1);
-  const { adapter, mode } = await getSparktoroAdapter(project.organizationId);
   if (cached) return { ...cached, mode };
 
   // A failed or interrupted report must not occupy the unique cache key. Its
@@ -464,6 +479,56 @@ export function normalizedSignals(section: string, normalized: Record<string, un
 function firstString(row: Record<string, unknown>, keys: string[]) {
   for (const key of keys) if (typeof row[key] === "string" && row[key]) return row[key] as string;
   return null;
+}
+
+/**
+ * Structured Outputs can guarantee the citation field shape, but the model can
+ * still copy an ID incorrectly. Keep valid references, remove unsupported
+ * references, and omit only an insight that would otherwise have no evidence.
+ */
+export function sanitizePersonaReferences(
+  output: PersonaGeneration,
+  signals: { id: string; category: string }[],
+) {
+  const allowed = new Set(signals.map((signal) => signal.id));
+  const demographic = new Set(
+    signals
+      .filter((signal) => signal.category.startsWith("demographic:"))
+      .map((signal) => signal.id),
+  );
+  let removedReferences = 0;
+  let droppedInsights = 0;
+
+  const sanitize = (value: unknown, demographicScope = false): unknown => {
+    if (Array.isArray(value)) {
+      return value.map((item) => sanitize(item, demographicScope)).filter((item) => item !== null);
+    }
+    if (!value || typeof value !== "object") return value;
+    const row = value as Record<string, unknown>;
+    if (Array.isArray(row.signal_ids)) {
+      const validSet = demographicScope ? demographic : allowed;
+      const original = row.signal_ids.filter((id): id is string => typeof id === "string");
+      const signalIds = [...new Set(original.filter((id) => validSet.has(id)))];
+      removedReferences += original.length - signalIds.length;
+      if (!signalIds.length) {
+        droppedInsights++;
+        return null;
+      }
+      return { ...row, signal_ids: signalIds };
+    }
+    return Object.fromEntries(
+      Object.entries(row).map(([key, child]) => [
+        key,
+        sanitize(child, demographicScope || key === "demographics"),
+      ]),
+    );
+  };
+
+  return {
+    output: sanitize(structuredClone(output)) as PersonaGeneration,
+    removedReferences,
+    droppedInsights,
+  };
 }
 
 function validatePersonaReferences(

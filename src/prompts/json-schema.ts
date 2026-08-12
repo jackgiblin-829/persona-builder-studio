@@ -1,6 +1,18 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { z } from "zod";
 
+const OPENAI_SUPPORTED_STRING_FORMATS = new Set([
+  "date-time",
+  "time",
+  "date",
+  "duration",
+  "email",
+  "hostname",
+  "ipv4",
+  "ipv6",
+  "uuid",
+]);
+
 /**
  * Converts a Zod schema to the strict JSON Schema the Responses API expects.
  * OpenAI's strict mode requires `additionalProperties: false` everywhere and
@@ -22,6 +34,14 @@ export function toStrictJsonSchema(schema: z.ZodTypeAny, name: string): Record<s
 function harden(node: unknown): Record<string, unknown> {
   if (typeof node !== "object" || node === null) return node as Record<string, unknown>;
   const obj = { ...(node as Record<string, unknown>) };
+
+  // Zod's `.url()` becomes `format: "uri"`, but Structured Outputs supports
+  // only a smaller set of string formats. The original Zod schema still
+  // validates the returned value, so removing an unsupported provider hint
+  // does not weaken application-side validation.
+  if (typeof obj.format === "string" && !OPENAI_SUPPORTED_STRING_FORMATS.has(obj.format)) {
+    delete obj.format;
+  }
 
   if (obj.type === "object" && obj.properties && typeof obj.properties === "object") {
     const properties = obj.properties as Record<string, unknown>;

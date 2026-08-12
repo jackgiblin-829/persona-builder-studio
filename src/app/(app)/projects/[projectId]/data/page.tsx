@@ -10,7 +10,6 @@ import {
   MetricStrip,
   PageHeader,
   StatusBadge,
-  WorkflowStepper,
 } from "@/components/ui";
 import { hasCapability, requireProjectAccess } from "@/lib/auth/context";
 import { getCsrfToken } from "@/lib/auth/session";
@@ -18,14 +17,6 @@ import { getProjectWorkflowSummary } from "@/services/projects";
 import { getPersonaGenerationPreflight } from "@/services/studio";
 
 export const dynamic = "force-dynamic";
-
-const STAGE_ORDER = [
-  "processing_sources",
-  "researching_audience",
-  "identifying_segments",
-  "creating_personas",
-  "ready",
-];
 
 export default async function ProjectDataPage({
   params,
@@ -39,21 +30,18 @@ export default async function ProjectDataPage({
   const canEdit = hasCapability(ctx, "source:upload");
   let preflight: Awaited<ReturnType<typeof getPersonaGenerationPreflight>> | null = null;
   let preflightError: string | null = null;
-  if (summary.completedSourceCount > 0) {
+  if (summary.sources.length > 0) {
     try {
       preflight = await getPersonaGenerationPreflight(ctx);
     } catch (error) {
       preflightError = error instanceof Error ? error.message : "SparkToro preflight failed.";
     }
   }
-  const activeStage =
-    latestRun?.status === "running" || latestRun?.status === "queued" ? latestRun.stage : null;
-  const activeIndex = activeStage ? STAGE_ORDER.indexOf(activeStage) : -1;
   return (
     <>
       <PageHeader
-        title="Data"
-        description="Upload research, refine the audience, and generate the active persona set with one intentional action."
+        title="Build personas"
+        description="Add brand knowledge, define the audience in SparkToro, and let the studio do the rest."
         breadcrumb={`${summary.project.name} / Data`}
         actions={
           <Link href={`/projects/${projectId}/data`} className="text-sm text-ink-muted underline">
@@ -80,12 +68,11 @@ export default async function ProjectDataPage({
       ) : null}
 
       <MetricStrip
-        className="mb-4 lg:grid-cols-6"
+        className="mb-4 lg:grid-cols-5"
         metrics={[
           { label: "Sources", value: summary.sources.length },
           { label: "Ready", value: summary.completedSourceCount, tone: "success" },
-          { label: "Source revision", value: summary.project.sourceRevision },
-          { label: "Active persona revision", value: summary.project.activePersonaRevision },
+          { label: "Active personas", value: summary.activePersonas.length },
           { label: "Market", value: summary.project.primaryMarket },
           {
             label: "Evidence readiness",
@@ -94,94 +81,6 @@ export default async function ProjectDataPage({
           },
         ]}
       />
-
-      <Card className="mb-5">
-        <CardHeader
-          title="Brand intelligence readiness"
-          description="Coverage matters more than file volume. Fill these evidence areas before treating the generated prompts as a strategic baseline."
-          actions={
-            <Badge tone={summary.brandReadiness.score === 100 ? "success" : "warn"}>
-              {summary.brandReadiness.readyAreaCount}/{summary.brandReadiness.totalAreaCount} areas
-              covered
-            </Badge>
-          }
-        />
-        <div className="p-4">
-          <div className="h-2 overflow-hidden rounded-full bg-surface-sunken">
-            <div
-              className="h-full bg-accent"
-              style={{ width: `${summary.brandReadiness.score}%` }}
-            />
-          </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {summary.brandReadiness.areas.map((area) => (
-              <div
-                key={area.label}
-                className="flex items-center justify-between gap-3 rounded-lg border border-surface-border px-3 py-2"
-              >
-                <span className="text-sm text-ink">{area.label}</span>
-                <Badge tone={area.ready ? "success" : "warn"}>
-                  {area.ready
-                    ? "covered"
-                    : area.label === "External audience behavior"
-                      ? "enrich with SparkToro"
-                      : "add evidence"}
-                </Badge>
-              </div>
-            ))}
-          </div>
-          {summary.brandReadiness.missing.length ? (
-            <p className="mt-3 text-xs text-ink-muted">
-              Recommended next inputs: {summary.brandReadiness.missing.join(", ")}.
-            </p>
-          ) : (
-            <p className="mt-3 text-xs text-success">
-              All core evidence areas are represented. You can still add more sources to improve
-              depth and confidence.
-            </p>
-          )}
-        </div>
-      </Card>
-
-      <div className="mb-5 grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
-        <Card>
-          <CardHeader
-            title="Workflow status"
-            description="One consolidated view from source processing through an atomically switched persona set."
-          />
-          <WorkflowStepper
-            stages={STAGE_ORDER.map((stage, index) => ({
-              label: stage.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
-              detail: activeStage === stage ? `${latestRun?.progress ?? 0}% complete` : undefined,
-              status:
-                latestRun?.status === "failed" && latestRun.stage === stage
-                  ? "blocked"
-                  : activeStage === stage
-                    ? "running"
-                    : latestRun?.status === "completed" ||
-                        latestRun?.status === "completed_with_warnings" ||
-                        index < activeIndex
-                      ? "done"
-                      : stage === "processing_sources" && summary.completedSourceCount > 0
-                        ? "done"
-                        : "waiting",
-            }))}
-          />
-        </Card>
-        <Card>
-          <CardHeader
-            title="SparkToro audience"
-            description="Aggregate audience data is never presented as an individual persona trait."
-          />
-          <div className="p-4">
-            <AudienceDescriptionForm
-              projectId={projectId}
-              csrfToken={csrfToken}
-              value={summary.project.sparktoroAudienceDescription}
-            />
-          </div>
-        </Card>
-      </div>
 
       {canEdit ? (
         <div className="mb-5">
@@ -192,7 +91,7 @@ export default async function ProjectDataPage({
       <Card className="mb-5">
         <CardHeader
           title="Sources"
-          description="Each file moves through parsing, PII redaction, and research-signal extraction automatically."
+          description="Uploads are parsed, redacted, and converted into usable evidence automatically. Build personas will also finish anything still pending."
         />
         {summary.sources.length ? (
           <div className="divide-y divide-surface-border">
@@ -243,10 +142,24 @@ export default async function ProjectDataPage({
         )}
       </Card>
 
+      <Card className="mb-5">
+        <CardHeader
+          title="2. Define the SparkToro audience"
+          description="SparkToro is the audience-research layer. Its aggregate behavior enriches your uploaded brand evidence."
+        />
+        <div className="p-4">
+          <AudienceDescriptionForm
+            projectId={projectId}
+            csrfToken={csrfToken}
+            value={summary.project.sparktoroAudienceDescription}
+          />
+        </div>
+      </Card>
+
       <Card>
         <CardHeader
-          title="Generate personas"
-          description="Creates three to five descriptive personas and replaces the active set only after the complete run succeeds."
+          title="3. Build personas"
+          description="One action finishes pending sources, gathers SparkToro audience behavior, and creates three to five evidence-backed personas."
           actions={
             preflight?.cached ? (
               <Badge tone="success">SparkToro cache hit</Badge>
@@ -264,9 +177,7 @@ export default async function ProjectDataPage({
                   : `${preflight.balance} credits available · maximum estimated spend ${preflight.maximumSpend}.`}
               </p>
             ) : (
-              <p>
-                {preflightError ?? "Complete a source to enable generation and credit preflight."}
-              </p>
+              <p>{preflightError ?? "Add a source to start."}</p>
             )}
           </div>
           {canEdit ? (
@@ -277,10 +188,10 @@ export default async function ProjectDataPage({
               className="space-y-0"
             >
               <SubmitButton
-                label={summary.activePersonas.length ? "Regenerate personas" : "Generate personas"}
-                pendingLabel="Starting…"
+                label={summary.activePersonas.length ? "Refresh personas" : "Build personas"}
+                pendingLabel="Processing evidence and building personas…"
                 disabled={
-                  summary.completedSourceCount === 0 || Boolean(preflight && !preflight.sufficient)
+                  summary.sources.length === 0 || Boolean(preflight && !preflight.sufficient)
                 }
               />
             </ActionForm>

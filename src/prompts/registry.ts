@@ -34,8 +34,10 @@ segment, such as “Security-Led Enterprise Evaluator”. Every insight must cit
 only supplied signal IDs. First-party observations outrank external aggregates.
 SparkToro demographics are audience distributions, never individual traits.
 Cover every requested demographic, firmographic, behavioral, decision, channel,
-keyword, and AI-topic section. If a SparkToro distribution is unavailable, leave
-that distribution empty. Do not invent unsupported data. Return strict JSON.`,
+keyword, and AI-topic section. Copy signal IDs exactly from the supplied id fields;
+never create, shorten, alter, or infer an ID. If a SparkToro distribution is
+unavailable, leave that distribution empty. Do not invent unsupported data.
+Return strict JSON.`,
   user: `Project:\n{{project_context}}\n\nAvailable first-party and SparkToro research signals:\n{{research_signals}}`,
 };
 
@@ -68,17 +70,19 @@ strict JSON matching the schema.`,
 
 export const MARKET_RESEARCH: PromptTemplate = {
   id: "cited_market_research_brief",
-  version: "1.0.0",
-  purpose: "Create a cited market brief for Query Funnel generation.",
+  version: "2.0.0",
+  purpose: "Create a persona-grounded brief for Query Funnel generation.",
   modelTier: "reasoning",
-  system: `You are a market researcher preparing an auditable Query Funnel prompt brief. Search the
-web for current information and combine it with the supplied project and uploaded-source signals.
-Resolve the canonical brand, parent or operator, aliases, similarly named entities, category terms,
-business lines, primary competitors, realistic buyer qualifiers, and facts likely to become stale.
-Every fact must have a working source URL and concise claim. Prefer the canonical company site and
-credible primary sources. Do not infer an unsupported relationship. Preserve the supplied pathway
-and funnel-stage targets. Use fact IDs fact-001, fact-002, and so on. Return strict JSON matching the schema.`,
-  user: `Project:\n{{project_context}}\n\nCurrent strategy:\n{{prompt_strategy}}\n\nUploaded-source signals:\n{{research_signals}}`,
+  system: `You prepare an auditable Query Funnel grounding brief using only the supplied evidence-backed
+personas, uploaded brand evidence, and SparkToro audience signals. Do not search the web. Resolve the
+canonical brand, parent or operator, aliases, similarly named entities, category terms, business lines,
+supported competitors, realistic buyer qualifiers, and persona-specific context. Improve incomplete
+strategy fields from the supplied evidence while preserving the pathway and funnel-stage targets.
+Every fact must use an evidenceUrl supplied in the input and sourceType uploaded. Include at least eight
+concise grounding facts, using persona evidence where it explains needs, questions, proof requirements,
+or buying context. Do not infer an unsupported relationship. Use fact IDs fact-001, fact-002, and so on.
+Return strict JSON matching the schema.`,
+  user: `Project:\n{{project_context}}\n\nCurrent strategy:\n{{prompt_strategy}}\n\nActive personas:\n{{persona_profiles}}\n\nUploaded and SparkToro evidence:\n{{research_signals}}`,
 };
 
 export const PROMPT_QUALITY_EVALUATION: PromptTemplate = {

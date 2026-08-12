@@ -20,7 +20,7 @@ export type EnqueueOptions = {
 export interface JobQueue {
   readonly driver: string;
   enqueue(type: string, payload: Record<string, unknown>, opts?: EnqueueOptions): Promise<JobRow>;
-  claim(types: string[], workerId: string): Promise<JobRow | null>;
+  claim(types: string[], workerId: string, projectId?: string): Promise<JobRow | null>;
   complete(jobId: string, result?: Record<string, unknown>): Promise<void>;
   fail(jobId: string, error: string, retryable: boolean): Promise<void>;
   partiallySucceed(jobId: string, result: Record<string, unknown>): Promise<void>;
@@ -79,7 +79,7 @@ export class PostgresJobQueue implements JobQueue {
     return row;
   }
 
-  async claim(types: string[], workerId: string): Promise<JobRow | null> {
+  async claim(types: string[], workerId: string, projectId?: string): Promise<JobRow | null> {
     if (types.length === 0) return null;
     return db.transaction(async (tx) => {
       const candidates = await tx
@@ -90,6 +90,7 @@ export class PostgresJobQueue implements JobQueue {
             inArray(jobs.type, types),
             or(eq(jobs.status, "queued"), eq(jobs.status, "retrying")),
             lte(jobs.runAfter, new Date()),
+            projectId ? eq(jobs.projectId, projectId) : undefined,
           ),
         )
         .orderBy(jobs.runAfter, jobs.createdAt)

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { closeDb, db } from "@/db/client";
 import {
   generationRuns,
@@ -169,7 +169,7 @@ describe("persona versioning and prompt refresh", () => {
     ).toHaveLength(1);
   });
 
-  it("publishes an immutable edit, rejects a stale edit, and queues prompt replacement", async () => {
+  it("publishes an immutable edit, rejects a stale edit, and refreshes prompts", async () => {
     const [before] = await db
       .select()
       .from(personas)
@@ -236,18 +236,23 @@ describe("persona versioning and prompt refresh", () => {
           .where(eq(promptSets.personaId, before!.id))
           .limit(1)
       )[0]?.value,
-    ).toBe(priorPromptPointer);
+    ).not.toBe(priorPromptPointer);
 
-    const queuedRuns = await db
+    const refreshedRuns = await db
       .select()
       .from(generationRuns)
       .where(eq(generationRuns.projectId, editor.projectId));
-    expect(queuedRuns.some((run) => run.workflowType === "prompt_generation")).toBe(true);
-    const queuedJobs = await db
-      .select()
-      .from(jobs)
-      .where(inArray(jobs.status, ["queued", "retrying"]));
-    expect(queuedJobs.some((job) => job.type === "generate_prompts")).toBe(true);
+    expect(
+      refreshedRuns.some(
+        (run) =>
+          run.workflowType === "prompt_generation" &&
+          ["completed", "completed_with_warnings"].includes(run.status),
+      ),
+    ).toBe(true);
+    const promptJobs = await db.select().from(jobs).where(eq(jobs.type, "generate_prompts"));
+    expect(
+      promptJobs.some((job) => ["succeeded", "partially_succeeded"].includes(job.status)),
+    ).toBe(true);
 
     await expect(savePersonaVersion(editor, input)).rejects.toThrow(/changed after you opened/i);
     const [stillCurrent] = await db
@@ -258,16 +263,8 @@ describe("persona versioning and prompt refresh", () => {
     expect(stillCurrent?.currentVersionId).toBe(versionId);
   });
 
-  it("reuses an identical active persona run and enqueues a fresh intentional rerun", async () => {
+  it("completes every intentional persona refresh", async () => {
     const firstRunId = await startPersonaGeneration(editor);
-    const duplicateRunId = await startPersonaGeneration(editor);
-    expect(duplicateRunId).toBe(firstRunId);
-
-    await db
-      .update(generationRuns)
-      .set({ status: "completed", stage: "ready", progress: 100, finishedAt: new Date() })
-      .where(eq(generationRuns.id, firstRunId));
-
     const nextRunId = await startPersonaGeneration(editor);
     expect(nextRunId).not.toBe(firstRunId);
     const personaJobs = await db.select().from(jobs).where(eq(jobs.type, "generate_personas"));
@@ -275,5 +272,6 @@ describe("persona versioning and prompt refresh", () => {
       expect.arrayContaining([firstRunId, nextRunId]),
     );
     expect(personaJobs).toHaveLength(2);
+    expect(personaJobs.every((job) => job.status === "succeeded")).toBe(true);
   });
 });

@@ -144,8 +144,8 @@ export default async function PromptsPage({
   return (
     <>
       <PageHeader
-        title="Query Funnel baseline"
-        description="Turn each evidence-backed persona into connected BOFU, MOFU, and TOFU prompts for downstream SEO and GEO strategy."
+        title="Query Funnels"
+        description="Build a persona-specific SEO and GEO prompt baseline in one action. Grounding, funnel structure, quality checks, and approval are automated."
         breadcrumb={`${summary.project.name} / Query Funnels`}
         actions={
           <div className="flex gap-2">
@@ -172,19 +172,16 @@ export default async function PromptsPage({
                   label={
                     openAiMode === "mock"
                       ? sets.length
-                        ? "Refresh demo baseline"
-                        : "Generate demo baseline"
+                        ? "Refresh demo Query Funnels"
+                        : "Build demo Query Funnels"
                       : sets.length
-                        ? "Refresh baseline"
-                        : "Generate baseline"
+                        ? "Refresh Query Funnels"
+                        : "Build Query Funnels"
                   }
-                  pendingLabel="Starting…"
+                  pendingLabel="Grounding personas and building funnels…"
                   disabled={
                     !activePersonas.length ||
-                    !readiness.ready ||
-                    !blueprint ||
-                    !approvedBrief ||
-                    summary.project.promptStrategyEdited
+                    Boolean(latest && (latest.status === "running" || latest.status === "queued"))
                   }
                 />
               </ActionForm>
@@ -211,8 +208,8 @@ export default async function PromptsPage({
       {latestResearch &&
       (latestResearch.status === "running" || latestResearch.status === "queued") ? (
         <div className="mb-4">
-          <Callout tone="info" title="Refreshing market research">
-            The approved brief remains active while the cited replacement is built.
+          <Callout tone="info" title="Preparing persona grounding">
+            The studio is turning the active personas and their evidence into Query Funnel inputs.
           </Callout>
         </div>
       ) : null}
@@ -244,122 +241,165 @@ export default async function PromptsPage({
         ]}
       />
       <Card className="mb-5">
-        <CardHeader
-          title="Prompt grounding brief"
-          description="Freeze the brand, category, competitor, and customer context used to generate the baseline. Refresh manually when the evidence changes."
-          actions={
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge
-                tone={
-                  draftBrief
-                    ? "warn"
-                    : approvedBrief && !researchIsStale && !summary.project.promptStrategyEdited
-                      ? "success"
-                      : "warn"
-                }
-              >
-                {draftBrief
-                  ? "draft ready"
-                  : !approvedBrief
-                    ? "approval required"
-                    : researchIsStale
-                      ? "stale"
-                      : summary.project.promptStrategyEdited
-                        ? "strategy changed"
-                        : `approved v${approvedBrief.version}`}
-              </Badge>
-              {canEditStrategy ? (
-                <ActionForm
-                  action={refreshMarketResearchAction}
-                  csrfToken={csrfToken}
-                  hidden={{ projectId }}
-                  className="space-y-0"
-                >
-                  <SubmitButton
-                    label={approvedBrief ? "Refresh grounding" : "Build grounding brief"}
-                    pendingLabel="Starting…"
-                    size="sm"
-                    variant="secondary"
-                    disabled={Boolean(
-                      latestResearch &&
-                      (latestResearch.status === "running" || latestResearch.status === "queued"),
-                    )}
-                  />
-                </ActionForm>
-              ) : null}
+        <div className="grid gap-3 p-4 md:grid-cols-3">
+          {[
+            [
+              "1",
+              "Ground personas",
+              "Combine persona needs, language, uploaded evidence, and SparkToro signals.",
+            ],
+            [
+              "2",
+              "Build the funnel",
+              "Create linked bottom-, middle-, and top-of-funnel prompts for every persona.",
+            ],
+            [
+              "3",
+              "Quality-check",
+              "Score, deduplicate, and automatically approve prompts that pass the quality gate.",
+            ],
+          ].map(([number, title, description]) => (
+            <div key={number} className="rounded-lg border border-surface-border p-3">
+              <p className="text-2xs font-bold uppercase tracking-wide text-accent">
+                Step {number}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-ink">{title}</p>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">{description}</p>
             </div>
-          }
-        />
-        <div className="space-y-4 p-4">
-          {researchIsStale ? (
-            <Callout tone="warn" title="Research is more than 30 days old">
-              Refresh it before the next production baseline if competitors or product facts may
-              have changed.
-            </Callout>
-          ) : null}
-          {summary.project.promptStrategyEdited && approvedBrief ? (
-            <Callout tone="warn" title="Strategy changed after approval">
-              Refresh and approve the brief again before generating a production baseline.
-            </Callout>
-          ) : null}
-          {draftBrief ? (
-            <div className="rounded-lg border border-surface-border bg-surface-sunken p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-ink">Draft v{draftBrief.version}</p>
-                  <p className="mt-1 max-w-4xl text-sm text-ink-muted">
-                    {draftBrief.content.summary}
-                  </p>
-                  <p className="mt-2 text-xs text-ink-subtle">
-                    {draftBrief.content.facts.length} cited facts · {draftBrief.dataOrigin} research
-                  </p>
-                </div>
+          ))}
+        </div>
+      </Card>
+      <details className="mb-5">
+        <summary className="card cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+          Advanced: review persona grounding
+          <span className="ml-2 text-xs font-normal text-ink-muted">
+            Optional — created automatically when Query Funnels are built
+          </span>
+        </summary>
+        <Card className="mt-2">
+          <CardHeader
+            title="Persona grounding brief"
+            description="Review or manually refresh the persona, brand, category, competitor, and customer context used for generation."
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  tone={
+                    draftBrief
+                      ? "warn"
+                      : approvedBrief && !researchIsStale && !summary.project.promptStrategyEdited
+                        ? "success"
+                        : "warn"
+                  }
+                >
+                  {draftBrief
+                    ? "draft ready"
+                    : !approvedBrief
+                      ? "approval required"
+                      : researchIsStale
+                        ? "stale"
+                        : summary.project.promptStrategyEdited
+                          ? "strategy changed"
+                          : `approved v${approvedBrief.version}`}
+                </Badge>
                 {canEditStrategy ? (
                   <ActionForm
-                    action={approveMarketResearchAction}
+                    action={refreshMarketResearchAction}
                     csrfToken={csrfToken}
-                    hidden={{ projectId, briefId: draftBrief.id }}
+                    hidden={{ projectId }}
                     className="space-y-0"
                   >
-                    <SubmitButton label="Approve and freeze" pendingLabel="Approving…" size="sm" />
+                    <SubmitButton
+                      label={approvedBrief ? "Refresh grounding" : "Build grounding brief"}
+                      pendingLabel="Starting…"
+                      size="sm"
+                      variant="secondary"
+                      disabled={Boolean(
+                        latestResearch &&
+                        (latestResearch.status === "running" || latestResearch.status === "queued"),
+                      )}
+                    />
                   </ActionForm>
                 ) : null}
               </div>
-              <div className="mt-3 grid gap-2 md:grid-cols-2">
-                {draftBrief.content.facts.slice(0, 8).map((fact) => (
-                  <a
-                    key={fact.id}
-                    href={fact.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded border border-surface-border bg-surface px-3 py-2 text-xs text-ink hover:underline"
-                  >
-                    {fact.claim}
-                  </a>
-                ))}
+            }
+          />
+          <div className="space-y-4 p-4">
+            {researchIsStale ? (
+              <Callout tone="warn" title="Research is more than 30 days old">
+                Refresh it before the next production baseline if competitors or product facts may
+                have changed.
+              </Callout>
+            ) : null}
+            {summary.project.promptStrategyEdited && approvedBrief ? (
+              <Callout tone="warn" title="Strategy changed after approval">
+                Refresh and approve the brief again before generating a production baseline.
+              </Callout>
+            ) : null}
+            {draftBrief ? (
+              <div className="rounded-lg border border-surface-border bg-surface-sunken p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-ink">Draft v{draftBrief.version}</p>
+                    <p className="mt-1 max-w-4xl text-sm text-ink-muted">
+                      {draftBrief.content.summary}
+                    </p>
+                    <p className="mt-2 text-xs text-ink-subtle">
+                      {draftBrief.content.facts.length} cited facts · {draftBrief.dataOrigin}{" "}
+                      research
+                    </p>
+                  </div>
+                  {canEditStrategy ? (
+                    <ActionForm
+                      action={approveMarketResearchAction}
+                      csrfToken={csrfToken}
+                      hidden={{ projectId, briefId: draftBrief.id }}
+                      className="space-y-0"
+                    >
+                      <SubmitButton
+                        label="Approve and freeze"
+                        pendingLabel="Approving…"
+                        size="sm"
+                      />
+                    </ActionForm>
+                  ) : null}
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {draftBrief.content.facts.slice(0, 8).map((fact) => (
+                    <a
+                      key={fact.id}
+                      href={fact.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded border border-surface-border bg-surface px-3 py-2 text-xs text-ink hover:underline"
+                    >
+                      {fact.claim}
+                    </a>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : approvedBrief ? (
-            <div>
-              <p className="text-sm text-ink-muted">{approvedBrief.content.summary}</p>
-              <p className="mt-2 text-xs text-ink-subtle">
-                {approvedBrief.content.facts.length} cited facts · captured{" "}
-                {approvedBrief.capturedAt.toLocaleDateString()} · stale warning{" "}
-                {approvedBrief.staleAt.toLocaleDateString()}
+            ) : approvedBrief ? (
+              <div>
+                <p className="text-sm text-ink-muted">{approvedBrief.content.summary}</p>
+                <p className="mt-2 text-xs text-ink-subtle">
+                  {approvedBrief.content.facts.length} cited facts · captured{" "}
+                  {approvedBrief.capturedAt.toLocaleDateString()} · stale warning{" "}
+                  {approvedBrief.staleAt.toLocaleDateString()}
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-ink-muted">
+                A persona grounding brief will be created and approved automatically when you build
+                Query Funnels.
               </p>
-            </div>
-          ) : (
-            <Callout tone="warn" title="Grounding and approval required">
-              Build and approve a cited grounding brief before generating production prompts.
-            </Callout>
-          )}
-        </div>
-      </Card>
+            )}
+          </div>
+        </Card>
+      </details>
       {sets.length ? (
         <Card className="mb-5">
           <CardHeader
             title="Baseline quality gate"
-            description={`Production export requires ${strategy.targetPromptCount} linked prompts per persona, every prompt scoring 80 or higher, and human approval.`}
+            description={`Production export requires ${strategy.targetPromptCount} linked prompts per persona. Passing prompts are approved automatically; anything below 80 remains editable.`}
             actions={
               <Badge
                 tone={
@@ -388,14 +428,11 @@ export default async function PromptsPage({
             <QualityMetric label="Passing drafts" value={String(readyCount + approvedCount)} />
             <QualityMetric label="Needs revision" value={String(needsRevisionCount)} />
             <QualityMetric label="Semantic risks" value={String(semanticRiskCount)} />
-            <QualityMetric
-              label="Human approved"
-              value={`${approvedCount}/${expectedPromptCount}`}
-            />
+            <QualityMetric label="Approved" value={`${approvedCount}/${expectedPromptCount}`} />
           </div>
         </Card>
       ) : null}
-      {sets.length && canGenerate ? (
+      {sets.length && canGenerate && readyCount > 0 ? (
         <div className="mb-5 flex justify-end">
           <ActionForm
             action={approvePromptLibraryAction}
@@ -404,75 +441,86 @@ export default async function PromptsPage({
             className="space-y-0"
           >
             <SubmitButton
-              label="Approve all quality-passed prompts"
+              label="Approve remaining quality-passed prompts"
               pendingLabel="Approving…"
               variant="secondary"
             />
           </ActionForm>
         </div>
       ) : null}
-      <Card className="mb-5">
-        <CardHeader
-          title="Query Funnel strategy"
-          description="Approve the brand, category, competitor, buyer context, and bottom-up funnel shape used for every persona."
-          actions={
-            <Badge tone={readiness.ready && blueprint ? "success" : "warn"}>
-              {readiness.ready && blueprint ? "ready" : "needs review"}
-            </Badge>
-          }
-        />
-        <div className="border-b border-surface-border p-4">
-          {canEditStrategy ? (
-            <div className="mb-4 flex justify-end">
-              <ActionForm
-                action={applyPromptStrategySuggestionsAction}
-                csrfToken={csrfToken}
-                hidden={{ projectId }}
-                className="space-y-0"
-              >
-                <SubmitButton
-                  label="Apply suggestions from research"
-                  pendingLabel="Reviewing signals…"
-                  variant="secondary"
-                  size="sm"
+      <details className="mb-5">
+        <summary className="card cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+          Advanced: edit funnel settings
+          <span className="ml-2 text-xs font-normal text-ink-muted">
+            Optional — defaults are completed from persona evidence
+          </span>
+        </summary>
+        <Card className="mt-2">
+          <CardHeader
+            title="Query Funnel settings"
+            description="Optionally edit the brand, category, competitor, buyer context, and bottom-up funnel shape."
+            actions={
+              <Badge tone={readiness.ready && blueprint ? "success" : "warn"}>
+                {readiness.ready && blueprint ? "ready" : "needs review"}
+              </Badge>
+            }
+          />
+          <div className="border-b border-surface-border p-4">
+            {canEditStrategy ? (
+              <div className="mb-4 flex justify-end">
+                <ActionForm
+                  action={applyPromptStrategySuggestionsAction}
+                  csrfToken={csrfToken}
+                  hidden={{ projectId }}
+                  className="space-y-0"
+                >
+                  <SubmitButton
+                    label="Apply suggestions from evidence"
+                    pendingLabel="Reviewing signals…"
+                    variant="secondary"
+                    size="sm"
+                  />
+                </ActionForm>
+              </div>
+            ) : null}
+            {readiness.blockers.length ? (
+              <div className="mb-4">
+                <Callout tone="warn" title="Automation will complete these inputs">
+                  {readiness.blockers.join(" ")} You can also edit them here before building.
+                </Callout>
+              </div>
+            ) : null}
+            {blueprint ? (
+              <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <QualityMetric
+                  label="Pathways per persona"
+                  value={String(strategy.pathwaysPerPersona)}
                 />
-              </ActionForm>
-            </div>
-          ) : null}
-          {readiness.blockers.length ? (
-            <div className="mb-4">
-              <Callout tone="warn" title="Complete before generating">
-                {readiness.blockers.join(" ")}
-              </Callout>
-            </div>
-          ) : null}
-          {blueprint ? (
-            <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <QualityMetric
-                label="Pathways per persona"
-                value={String(strategy.pathwaysPerPersona)}
-              />
-              <QualityMetric label="BOFU anchors" value={String(strategy.funnelTargets.decision)} />
-              <QualityMetric
-                label="MOFU evaluations"
-                value={String(strategy.funnelTargets.consideration)}
-              />
-              <QualityMetric
-                label="TOFU awareness"
-                value={String(strategy.funnelTargets.awareness)}
-              />
-            </div>
-          ) : null}
-          {canEditStrategy ? (
-            <PromptStrategyForm projectId={projectId} csrfToken={csrfToken} strategy={strategy} />
-          ) : (
-            <p className="text-sm text-ink-muted">
-              Your role can review this strategy and export approved live prompts, but cannot edit
-              generation inputs.
-            </p>
-          )}
-        </div>
-      </Card>
+                <QualityMetric
+                  label="BOFU anchors"
+                  value={String(strategy.funnelTargets.decision)}
+                />
+                <QualityMetric
+                  label="MOFU evaluations"
+                  value={String(strategy.funnelTargets.consideration)}
+                />
+                <QualityMetric
+                  label="TOFU awareness"
+                  value={String(strategy.funnelTargets.awareness)}
+                />
+              </div>
+            ) : null}
+            {canEditStrategy ? (
+              <PromptStrategyForm projectId={projectId} csrfToken={csrfToken} strategy={strategy} />
+            ) : (
+              <p className="text-sm text-ink-muted">
+                Your role can review this strategy and export approved live prompts, but cannot edit
+                generation inputs.
+              </p>
+            )}
+          </div>
+        </Card>
+      </details>
       {sets.length ? (
         <Card className="mb-5">
           <div className="p-4">
@@ -545,7 +593,7 @@ export default async function PromptsPage({
         <Card>
           <EmptyState
             title="No Query Funnels yet"
-            description="Approve the grounding brief and strategy, then generate a linked prompt baseline for every active persona."
+            description="Use Build Query Funnels above. Persona grounding, strategy completion, prompt generation, and quality approval will happen automatically."
           />
         </Card>
       ) : !visibleSets.length ? (

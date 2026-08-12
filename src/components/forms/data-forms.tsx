@@ -51,8 +51,8 @@ export function DataUploadForms({
   return (
     <Card>
       <CardHeader
-        title="Add research"
-        description="Sources are parsed, redacted, and converted to research signals automatically."
+        title="1. Add brand sources"
+        description="Upload call transcripts, brand standards, company information, research, or customer language. Processing completes automatically."
         actions={
           <div
             role="tablist"

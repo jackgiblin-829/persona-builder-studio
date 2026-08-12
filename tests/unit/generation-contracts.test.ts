@@ -7,7 +7,14 @@ import {
   TOPIC_CLASSES,
   type PromptStrategy,
 } from "@/contracts/prompt-strategy";
-import { validatePromptLibrary } from "@/jobs/handlers/generate-prompts";
+import { sanitizePersonaReferences } from "@/jobs/handlers/generate-personas";
+import {
+  buildPromptGenerationBatches,
+  PROMPT_CELLS_PER_BATCH,
+  promptCandidateLibrarySchemaForBatch,
+  promptQualityEvaluationSchemaForBatch,
+  validatePromptLibrary,
+} from "@/jobs/handlers/generate-prompts";
 import { toStrictJsonSchema } from "@/prompts/json-schema";
 import {
   MARKET_RESEARCH,
@@ -104,6 +111,62 @@ function selectedLibrary(
 }
 
 describe("persona, research, and prompt quality contracts", () => {
+  it("emits an OpenAI-compatible schema while retaining application URL validation", () => {
+    const jsonSchema = toStrictJsonSchema(marketResearchBriefSchema, "CitedMarketResearchBrief");
+    const properties = jsonSchema.properties as Record<string, Record<string, unknown>>;
+    const facts = properties.facts!;
+    const factProperties = (facts.items as Record<string, unknown>).properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    expect(factProperties.sourceUrl?.format).toBeUndefined();
+    expect(factProperties.retrievedAt?.format).toBe("date-time");
+    expect(
+      marketResearchBriefSchema.safeParse({
+        summary: "A sufficiently detailed market research summary.",
+        strategy,
+        facts: Array.from({ length: 8 }, (_, index) => ({
+          id: `fact-${String(index + 1).padStart(3, "0")}`,
+          kind: "category",
+          claim: "A supported category claim.",
+          sourceTitle: "Research source",
+          sourceUrl: "not-a-url",
+          sourceType: "web",
+          retrievedAt: new Date().toISOString(),
+        })),
+        researchNotes: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("constrains prompt generation to exact, persona-specific batches", () => {
+    const blueprint = buildCoverageBlueprint(strategy, promptPersonas);
+    const batches = buildPromptGenerationBatches(blueprint);
+    const candidateSchema = toStrictJsonSchema(
+      promptCandidateLibrarySchemaForBatch(PROMPT_CELLS_PER_BATCH),
+      "PromptCandidateBatch",
+    );
+    const qualitySchema = toStrictJsonSchema(
+      promptQualityEvaluationSchemaForBatch(PROMPT_CELLS_PER_BATCH * 2),
+      "PromptQualityBatch",
+    );
+    const candidateItems = (candidateSchema.properties as Record<string, Record<string, unknown>>)
+      .candidates!;
+    const assessmentItems = (qualitySchema.properties as Record<string, Record<string, unknown>>)
+      .assessments!;
+
+    expect(batches).toHaveLength(15);
+    expect(batches.every((batch) => batch.length <= PROMPT_CELLS_PER_BATCH)).toBe(true);
+    expect(
+      batches.every((batch) => new Set(batch.map((cell) => cell.personaSlug)).size === 1),
+    ).toBe(true);
+    expect(candidateItems.minItems).toBe(20);
+    expect(candidateItems.maxItems).toBe(20);
+    expect(assessmentItems.minItems).toBe(20);
+    expect(assessmentItems.maxItems).toBe(20);
+  });
+
   it("produces three to five complete descriptive personas with valid references", async () => {
     const result = await adapter.generateStructured({
       templateId: PERSONA_GENERATION.id,
@@ -123,6 +186,36 @@ describe("persona, research, and prompt quality contracts", () => {
       expect(persona.name.split(" ").length).toBeGreaterThan(2);
       expect(persona.jobs_to_be_done.length).toBeGreaterThan(0);
       expect(persona.ai_prompt_topics.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps valid persona evidence while removing hallucinated signal IDs", async () => {
+    const result = await adapter.generateStructured({
+      templateId: PERSONA_GENERATION.id,
+      templateVersion: PERSONA_GENERATION.version,
+      schemaVersion: SCHEMA_VERSION,
+      system: PERSONA_GENERATION.system,
+      user: "test",
+      schema: personaGenerationSchema,
+      schemaName: "PersonaGeneration",
+      jsonSchema: toStrictJsonSchema(personaGenerationSchema, "PersonaGeneration"),
+      modelTier: "reasoning",
+      mockContext: { signals },
+    });
+    const generated = structuredClone(result.data);
+    generated.personas[0]!.jobs_to_be_done[0]!.signal_ids = ["unknown", "signal-0"];
+    generated.personas[0]!.motivations[0]!.signal_ids = ["unknown"];
+    const age = generated.personas[0]!.demographics.age[0];
+    if (age) age.signal_ids = ["signal-0", "signal-15"];
+
+    const sanitized = sanitizePersonaReferences(generated, signals);
+
+    expect(sanitized.removedReferences).toBeGreaterThanOrEqual(2);
+    expect(sanitized.droppedInsights).toBe(1);
+    expect(sanitized.output.personas[0]!.jobs_to_be_done[0]!.signal_ids).toEqual(["signal-0"]);
+    expect(sanitized.output.personas[0]!.motivations).toHaveLength(0);
+    if (age) {
+      expect(sanitized.output.personas[0]!.demographics.age[0]!.signal_ids).toEqual(["signal-15"]);
     }
   });
 

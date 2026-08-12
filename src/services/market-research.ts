@@ -7,6 +7,7 @@ import { requireCapability, type ProjectContext } from "@/lib/auth/context";
 import { NotFoundError, ValidationError } from "@/lib/errors";
 import { ID_PREFIXES, newId } from "@/lib/ids";
 import { JOB_TYPES } from "@/jobs/registry";
+import { drainProjectJobs } from "@/jobs/runner";
 import { recordAudit } from "./audit";
 import { getProject } from "./projects";
 
@@ -53,7 +54,10 @@ export async function startMarketResearch(ctx: ProjectContext) {
       ),
     )
     .limit(1);
-  if (active) return active.id;
+  if (active) {
+    await drainProjectJobs({ projectId: ctx.projectId, types: [JOB_TYPES.researchMarket] });
+    return active.id;
+  }
   const runId = newId(ID_PREFIXES.generationRun);
   await db.transaction(async (tx) => {
     await tx.insert(generationRuns).values({
@@ -67,7 +71,7 @@ export async function startMarketResearch(ctx: ProjectContext) {
       inputSnapshot: {
         sourceRevision: project.sourceRevision,
         promptStrategy: project.promptStrategy,
-        refreshMode: "manual",
+        refreshMode: "persona_grounding",
       },
       initiatedByUserId: ctx.userId,
     });
@@ -90,7 +94,41 @@ export async function startMarketResearch(ctx: ProjectContext) {
     entityType: "generation_run",
     entityId: runId,
   });
+  await drainProjectJobs({ projectId: ctx.projectId, types: [JOB_TYPES.researchMarket] });
   return runId;
+}
+
+/**
+ * Builds the grounding snapshot required by Query Funnels and freezes it in the
+ * same user action. The snapshot is derived from active personas, SparkToro
+ * signals, and uploaded brand evidence; it does not run a second web-research
+ * workflow.
+ */
+export async function buildAndApprovePersonaGroundingBrief(ctx: ProjectContext) {
+  const runId = await startMarketResearch(ctx);
+  const [run] = await db
+    .select({ status: generationRuns.status, errorMessage: generationRuns.errorMessage })
+    .from(generationRuns)
+    .where(eq(generationRuns.id, runId))
+    .limit(1);
+  if (run?.status === "failed") {
+    throw new ValidationError(run.errorMessage ?? "Persona grounding failed.");
+  }
+  const [draft] = await db
+    .select()
+    .from(marketResearchBriefs)
+    .where(
+      and(
+        eq(marketResearchBriefs.projectId, ctx.projectId),
+        eq(marketResearchBriefs.generationRunId, runId),
+        eq(marketResearchBriefs.status, "draft"),
+      ),
+    )
+    .orderBy(desc(marketResearchBriefs.version))
+    .limit(1);
+  if (!draft) throw new ValidationError("Persona grounding did not produce a usable brief.");
+  await approveMarketResearchBrief(ctx, draft.id);
+  return draft.id;
 }
 
 export async function approveMarketResearchBrief(ctx: ProjectContext, briefId: string) {

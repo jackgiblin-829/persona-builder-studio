@@ -20,7 +20,7 @@ import {
  * Never falls back to mock data on failure (ADR-009).
  */
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 /** Indicative per-million-token prices in cents, used for cost estimates only. */
 const PRICE_TABLE: Record<string, { inputCentsPerMTok: number; outputCentsPerMTok: number }> = {
@@ -250,11 +250,22 @@ export class LiveOpenAIAdapter implements OpenAIAdapter {
     } catch (error) {
       if (error instanceof VendorError) throw error;
       if (error instanceof Error && error.name === "AbortError") {
+        if (attempt <= 3) {
+          await sleep(Math.min(2 ** attempt * 1000, 20_000));
+          return this.request(path, body, operation, attempt + 1);
+        }
         throw new VendorError("openai", operation, "OpenAI request timed out.", {
           code: "vendor_timeout",
           retryable: true,
           cause: error,
         });
+      }
+      // Fetch can fail before OpenAI returns an HTTP response (temporary DNS,
+      // socket, or connection reset). Retry those transport failures inside
+      // the request so a long multi-batch workflow does not restart from zero.
+      if (attempt <= 3) {
+        await sleep(Math.min(2 ** attempt * 1000, 20_000));
+        return this.request(path, body, operation, attempt + 1);
       }
       throw new VendorError("openai", operation, "OpenAI request failed.", {
         code: "vendor_unavailable",
