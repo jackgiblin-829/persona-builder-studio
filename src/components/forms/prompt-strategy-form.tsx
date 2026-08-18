@@ -1,7 +1,7 @@
 "use client";
 
 import { updatePromptStrategyAction } from "@/app/actions/projects";
-import type { PromptStrategy } from "@/contracts/prompt-strategy";
+import { resolvePromptWorkbookProfile, type PromptStrategy } from "@/contracts/prompt-strategy";
 import { ActionForm, SubmitButton } from "./action-form";
 import { Field, Input, Textarea } from "@/components/ui";
 
@@ -11,11 +11,14 @@ export function PromptStrategyForm({
   projectId,
   csrfToken,
   strategy,
+  primaryMarket,
 }: {
   projectId: string;
   csrfToken: string;
   strategy: PromptStrategy;
+  primaryMarket: string;
 }) {
+  const workbookProfile = resolvePromptWorkbookProfile(strategy, primaryMarket);
   return (
     <ActionForm
       action={updatePromptStrategyAction}
@@ -119,47 +122,114 @@ export function PromptStrategyForm({
           />
         </Field>
       </div>
-      <div>
-        <h3 className="mb-1 text-sm font-semibold text-ink">Query Funnel shape</h3>
-        <p className="mb-3 text-xs text-ink-muted">
-          Generation starts with purchase-ready anchors, then projects upward into evaluation and
-          awareness questions for every persona.
+      <div className="rounded-xl border border-surface-border bg-surface-sunken p-4">
+        <h3 className="text-sm font-semibold text-ink">Client workbook brief</h3>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">
+          These fields drive the strategic framing, competitor configuration, entity watchlist, and
+          rollout guidance in the final prompt-taxonomy workbook.
         </p>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <CountField
-            label="Pathways per persona"
-            name="pathwaysPerPersona"
-            value={strategy.pathwaysPerPersona}
-          />
-          <CountField
-            label="Bottom of funnel"
-            name="decisionTarget"
-            value={strategy.funnelTargets.decision}
-          />
-          <CountField
-            label="Middle of funnel"
-            name="considerationTarget"
-            value={strategy.funnelTargets.consideration}
-          />
-          <CountField
-            label="Top of funnel"
-            name="awarenessTarget"
-            value={strategy.funnelTargets.awareness}
-          />
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="Prepared by" htmlFor="preparedBy" required>
+            <Input
+              id="preparedBy"
+              name="preparedBy"
+              defaultValue={workbookProfile.preparedBy}
+              required
+            />
+          </Field>
+          <Field
+            label="Target regions"
+            htmlFor="targetRegions"
+            hint="One market per line."
+            required
+          >
+            <Textarea
+              id="targetRegions"
+              name="targetRegions"
+              rows={3}
+              defaultValue={lines(workbookProfile.targetRegions)}
+              required
+            />
+          </Field>
         </div>
-        <p className="mt-2 text-xs text-ink-subtle">
-          Current baseline: {strategy.targetPromptCount} prompts per persona.
-        </p>
+        <div className="mt-4">
+          <Field
+            label="Primary commercial job"
+            htmlFor="primaryCommercialJob"
+            hint="What should stronger AI visibility change commercially?"
+            required
+          >
+            <Textarea
+              id="primaryCommercialJob"
+              name="primaryCommercialJob"
+              rows={3}
+              defaultValue={workbookProfile.primaryCommercialJob}
+              required
+            />
+          </Field>
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <Field
+            label="Tracking surfaces"
+            htmlFor="trackingSurfaces"
+            hint="One answer engine per line."
+            required
+          >
+            <Textarea
+              id="trackingSurfaces"
+              name="trackingSurfaces"
+              rows={7}
+              defaultValue={lines(workbookProfile.trackingSurfaces)}
+              required
+            />
+          </Field>
+          <Field
+            label="Competitor tracking context"
+            htmlFor="competitorContext"
+            hint="Competitor | Business line | Why track | Phase"
+          >
+            <Textarea
+              id="competitorContext"
+              name="competitorContext"
+              rows={7}
+              defaultValue={lines(workbookProfile.competitorContext)}
+            />
+          </Field>
+          <Field
+            label="Entity watchlist"
+            htmlFor="entityRiskRows"
+            hint="Issue | Severity | Why it distorts results | Recommended action"
+          >
+            <Textarea
+              id="entityRiskRows"
+              name="entityRiskRows"
+              rows={7}
+              defaultValue={lines(workbookProfile.entityRiskRows)}
+            />
+          </Field>
+        </div>
       </div>
-      <SubmitButton label="Save prompt strategy" pendingLabel="Saving…" />
+      <div className="rounded-xl border border-surface-border p-4">
+        <h3 className="mb-1 text-sm font-semibold text-ink">Search-question volume</h3>
+        <p className="mb-3 max-w-3xl text-xs leading-5 text-ink-muted">
+          Choose the number of realistic questions to create for each persona. The studio balances
+          discovery, comparison, selection, brand, competitor, and risk searches automatically.
+        </p>
+        <div className="max-w-xs">
+          <Field label="Prompts per persona" htmlFor="targetPromptCount" hint="Recommended: 40–60">
+            <Input
+              id="targetPromptCount"
+              name="targetPromptCount"
+              type="number"
+              min={12}
+              max={100}
+              defaultValue={strategy.targetPromptCount}
+              required
+            />
+          </Field>
+        </div>
+      </div>
+      <SubmitButton label="Save workbook settings" pendingLabel="Saving…" />
     </ActionForm>
-  );
-}
-
-function CountField({ label, name, value }: { label: string; name: string; value: number }) {
-  return (
-    <Field label={label} htmlFor={name}>
-      <Input id={name} name={name} type="number" min={1} max={100} defaultValue={value} required />
-    </Field>
   );
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { QUALITY_ISSUE_CODES } from "@/contracts/prompt-generation";
 
-export const SCHEMA_VERSION = "6.0.0";
+export const SCHEMA_VERSION = "7.0.0";
 
 const promptStrategySchema = z.object({
   canonicalBrand: z.string().min(2).max(160),
@@ -102,6 +102,12 @@ const insightSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
+const deckInsightSchema = z.object({
+  text: z.string().min(2).max(800),
+  signal_ids: z.array(z.string().min(1)).min(1).max(12),
+  confidence: z.number().min(0).max(1),
+});
+
 const distributionSchema = z.object({
   label: z.string().min(1).max(160),
   value: z.number(),
@@ -118,6 +124,16 @@ export const personaGenerationSchema = z.object({
         slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
         description: z.string().min(20).max(1000),
         summary: z.string().min(20).max(1600),
+        deck_profile: z.object({
+          role: deckInsightSchema,
+          industry: deckInsightSchema,
+          expertise_level: deckInsightSchema,
+          tone: deckInsightSchema,
+          pov_lens: deckInsightSchema,
+          cares_about: z.array(deckInsightSchema).min(3).max(5),
+          never_say: z.array(deckInsightSchema).min(3).max(4),
+          content_best_suited_for: z.array(deckInsightSchema).min(2).max(3),
+        }),
         demographics: z.object({
           age: z.array(distributionSchema).max(20),
           gender: z.array(distributionSchema).max(20),

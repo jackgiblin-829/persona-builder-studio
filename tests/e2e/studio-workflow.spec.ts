@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
+import ExcelJS from "exceljs";
 
 async function signIn(page: Page) {
   await page.goto("/sign-in");
@@ -16,36 +17,42 @@ test("seeded three-tab workflow and legacy 404", async ({ page }) => {
   const workflow = page.getByRole("navigation", { name: "Project workflow" });
   await expect(workflow.getByRole("link", { name: /Data/ })).toBeVisible();
   await expect(workflow.getByRole("link", { name: /Personas/ })).toBeVisible();
-  await expect(workflow.getByRole("link", { name: /Query Funnels/ })).toBeVisible();
-  await workflow.getByRole("link", { name: /Query Funnels/ }).click();
-  await expect(page.getByRole("link", { name: /Download demo baseline/ })).toBeVisible();
-
-  const editorSummary = page.getByText("Edit or regenerate this prompt", { exact: true }).first();
-  const editor = editorSummary.locator("xpath=..");
-  await editorSummary.click();
-  const promptInput = editor.getByLabel("Prompt text");
-  const currentText = await promptInput.inputValue();
-  const draftText = `${currentText.replace(/\?$/, "")} with a new review constraint?`.slice(0, 500);
-  await promptInput.fill(draftText);
-  await editor.getByRole("button", { name: "Save draft" }).click();
-  await expect(page.getByText(/draft saved/i)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Latest quality draft" })).toBeVisible();
-  await expect(page.getByText(currentText, { exact: true }).first()).toBeVisible();
+  await expect(workflow.getByRole("link", { name: /Prompt Taxonomy/ })).toBeVisible();
+  await workflow.getByRole("link", { name: /Prompt Taxonomy/ }).click();
+  await expect(page.getByRole("link", { name: /Download demo workbook/ }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Prompt workbook setup" })).toBeVisible();
+  await expect(page.getByLabel("Prompts per persona")).toBeVisible();
+  await expect(page.getByText("Query Funnels", { exact: true })).toHaveCount(0);
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: /Download demo baseline/ }).click();
+  await page
+    .getByRole("link", { name: /Download demo workbook/ })
+    .first()
+    .click();
   const download = await downloadPromise;
   const downloadPath = await download.path();
   expect(downloadPath).not.toBeNull();
-  const csv = await readFile(downloadPath!, "utf8");
-  expect(csv).toContain(currentText);
-  expect(csv).not.toContain(draftText);
+  const workbookBytes = await readFile(downloadPath!);
+  expect(workbookBytes.subarray(0, 2).toString("utf8")).toBe("PK");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(workbookBytes as unknown as ExcelJS.Buffer);
+  expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual([
+    "Read Me",
+    "Topic Architecture",
+    "Prompt Library",
+    "Profound Import",
+    "Competitor Tracking",
+    "Entity Watchlist",
+  ]);
+  const promptLibrary = workbook.getWorksheet("Prompt Library")!;
+  expect(promptLibrary.getRow(4).values).toContain("Search Intent");
+  expect(promptLibrary.rowCount).toBeGreaterThan(100);
 
   const legacy = await page.request.get("/brands/legacy");
   expect(legacy.status()).toBe(404);
 });
 
-test("create project, ingest transcripts, generate, edit, and preserve a failed draft", async ({
+test("create project, build personas, and generate a realistic-search taxonomy", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -130,42 +137,38 @@ test("create project, ingest transcripts, generate, edit, and preserve a failed 
     .toBeGreaterThanOrEqual(3);
   expect(await personaHeadings.count()).toBeLessThanOrEqual(5);
   await expect(page.getByText(/aggregate audience distributions/i).first()).toBeAttached();
+  await expect(page.getByText("Client deck profile", { exact: true }).first()).toBeVisible();
+
+  const deckDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Export client deck" }).click();
+  const deckDownload = await deckDownloadPromise;
+  expect(deckDownload.suggestedFilename()).toMatch(/audience-personas\.pptx$/);
+  const deckPath = await deckDownload.path();
+  expect(deckPath).not.toBeNull();
+  const deckBytes = await readFile(deckPath!);
+  expect(deckBytes.subarray(0, 2).toString("utf8")).toBe("PK");
 
   const firstEditorSummary = page.getByText(/Edit sections and create version \d+/i).first();
   const firstEditor = firstEditorSummary.locator("xpath=..");
   await firstEditorSummary.click();
+  await expect(firstEditor.getByLabel("Title / role")).toBeVisible();
+  await expect(firstEditor.getByLabel("What they care about")).toBeVisible();
   await firstEditor
     .getByLabel("Summary")
     .fill(
       "Edited acceptance summary grounded in the completed project research and aggregate SparkToro audience distributions.",
     );
   await firstEditor.getByRole("button", { name: "Save new version" }).click();
-  await expect(firstEditor.getByText(/new persona version saved/i)).toBeVisible();
+  await expect(page.getByText(/new persona version saved/i)).toBeVisible({ timeout: 30_000 });
 
   await page.goto(`${projectPath}/prompts`);
-  await page.getByText(/Advanced: edit funnel settings/i).click();
   await page.getByLabel("Parent company").fill("Example Holdings");
   await page.getByLabel("Competitors").fill("Example Rival\nExample Alternative");
-  await page.getByRole("button", { name: "Save prompt strategy" }).click();
-  await expect(page.getByText(/Query Funnel strategy saved/i)).toBeVisible();
-  await page.getByText(/Advanced: review persona grounding/i).click();
-  await page.getByRole("button", { name: "Build grounding brief" }).click();
-  await expect(page.getByText(/persona grounding refreshed/i)).toBeVisible();
-  await expect
-    .poll(
-      async () => {
-        await page.reload();
-        return page.getByText(/draft v\d+/i).count();
-      },
-      { timeout: 90_000, message: "market research should produce an approvable draft" },
-    )
-    .toBe(1);
-  await page.getByText(/Advanced: review persona grounding/i).click();
-  await page.getByRole("button", { name: "Approve and freeze" }).click();
-  await expect(page.getByText(/approved v\d+/i)).toBeVisible();
-  await page.getByRole("button", { name: "Build demo Query Funnels" }).click();
-  await expect(page.getByText(/Query Funnels built and quality-checked/i)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Latest quality draft" })).toBeVisible();
-  await expect(page.getByText(/need revision/i).first()).toBeVisible();
-  await expect(page.getByRole("link", { name: /Download demo baseline/ })).toHaveCount(0);
+  await page.getByLabel("Prompts per persona").fill("40");
+  await page.getByRole("button", { name: "Save workbook settings" }).click();
+  await expect(page.getByText(/prompt taxonomy settings saved/i)).toBeVisible();
+  await page.getByRole("button", { name: "Create demo prompt taxonomy" }).click();
+  await expect(page.getByText(/prompt taxonomy created and quality-checked/i)).toBeVisible();
+  await expect(page.getByText(/search question/i).first()).toBeVisible();
+  await expect(page.getByText("Query Funnels", { exact: true })).toHaveCount(0);
 });

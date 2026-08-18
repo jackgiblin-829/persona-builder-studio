@@ -65,7 +65,7 @@ registerJob(JOB_TYPES.researchMarket, async ({ job }) => {
       .innerJoin(personaVersions, eq(personaVersions.id, personas.currentVersionId))
       .where(eq(personas.projectId, project.id));
     if (!activePersonas.length) {
-      throw new AppError("validation", "Generate personas before building Query Funnels.");
+      throw new AppError("validation", "Generate personas before creating a prompt taxonomy.");
     }
     const { adapter, mode } = await getOpenAIAdapter(project.organizationId);
     const result = await withVendorUsage(

@@ -5,6 +5,7 @@ import { getQueue } from "@/adapters/queue";
 import { getSparktoroAdapter, SPARKTORO_MAX_REPORT_COST } from "@/adapters/sparktoro";
 import { researchBriefIsStale } from "@/contracts/market-research";
 import { buildCoverageBlueprint, strategyReadiness } from "@/contracts/prompt-strategy";
+import { resolvePersonaPresentationProfile } from "@/contracts/studio";
 import { db } from "@/db/client";
 import {
   dataSources,
@@ -211,12 +212,12 @@ export async function startPromptGeneration(
   }
   if (!brief) {
     throw new ValidationError(
-      "Refresh and approve the market research brief before generating prompts.",
+      "Refresh the prompt taxonomy so its audience grounding can be prepared.",
     );
   }
   if (project.promptStrategyEdited) {
     throw new ValidationError(
-      "The strategy changed after research approval. Refresh and approve the market brief again.",
+      "The workbook settings changed. Refresh the prompt taxonomy to rebuild its audience grounding.",
     );
   }
   try {
@@ -276,7 +277,7 @@ export async function startPromptGeneration(
     .where(eq(generationRuns.id, runId))
     .limit(1);
   if (finished?.status === "failed") {
-    throw new ValidationError(finished.errorMessage ?? "Query Funnel generation failed.");
+    throw new ValidationError(finished.errorMessage ?? "Prompt taxonomy generation failed.");
   }
   return runId;
 }
@@ -292,12 +293,38 @@ const textList = z
       .slice(0, 20),
   )
   .refine((items) => items.length > 0, "Keep at least one insight in every section.");
+
+const deckList = (maximumItems: number, maximumCharacters: number) =>
+  z
+    .string()
+    .max(4000)
+    .transform((value) =>
+      value
+        .split(/\n+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, maximumItems),
+    )
+    .refine((items) => items.length > 0, "Keep at least one client-facing deck insight.")
+    .refine(
+      (items) => items.every((item) => item.length <= maximumCharacters),
+      `Keep each deck insight under ${maximumCharacters} characters.`,
+    );
+
 export const personaEditSchema = z.object({
   personaId: z.string().min(1),
   expectedVersion: z.coerce.number().int().positive(),
   name: z.string().trim().min(5).max(100),
   description: z.string().trim().min(20).max(1000),
   summary: z.string().trim().min(20).max(1600),
+  deckRole: z.string().trim().min(2).max(160),
+  deckIndustry: z.string().trim().min(2).max(180),
+  deckExpertiseLevel: z.string().trim().min(2).max(100),
+  deckTone: z.string().trim().min(10).max(420),
+  deckPovLens: z.string().trim().min(20).max(900),
+  deckCaresAbout: deckList(5, 220),
+  deckNeverSay: deckList(4, 240),
+  deckContentBestSuitedFor: deckList(3, 420),
   roles: textList,
   seniority: textList,
   departments: textList,
@@ -354,9 +381,26 @@ export async function savePersonaVersion(
   if (current.version.version !== input.expectedVersion)
     throw new ValidationError("This persona changed after you opened it. Reload before saving.");
   const existing = current.version.profile;
+  const existingDeck = resolvePersonaPresentationProfile(existing);
   const profile: PersonaProfile = {
     ...existing,
     summary: input.summary,
+    presentation: {
+      role: replaceInsights([existingDeck.role], [input.deckRole])[0]!,
+      industry: replaceInsights([existingDeck.industry], [input.deckIndustry])[0]!,
+      expertiseLevel: replaceInsights(
+        [existingDeck.expertiseLevel],
+        [input.deckExpertiseLevel],
+      )[0]!,
+      tone: replaceInsights([existingDeck.tone], [input.deckTone])[0]!,
+      povLens: replaceInsights([existingDeck.povLens], [input.deckPovLens])[0]!,
+      caresAbout: replaceInsights(existingDeck.caresAbout, input.deckCaresAbout),
+      neverSay: replaceInsights(existingDeck.neverSay, input.deckNeverSay),
+      contentBestSuitedFor: replaceInsights(
+        existingDeck.contentBestSuitedFor,
+        input.deckContentBestSuitedFor,
+      ),
+    },
     firmographics: {
       roles: replaceInsights(existing.firmographics.roles, input.roles),
       seniority: replaceInsights(existing.firmographics.seniority, input.seniority),

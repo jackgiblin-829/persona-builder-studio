@@ -42,10 +42,12 @@ export const FUNNEL_STAGES = ["awareness", "consideration", "decision"] as const
 export type FunnelStage = (typeof FUNNEL_STAGES)[number];
 
 export const FUNNEL_STAGE_LABELS: Record<FunnelStage, string> = {
-  awareness: "Top of funnel",
-  consideration: "Middle of funnel",
-  decision: "Bottom of funnel",
+  awareness: "Explore",
+  consideration: "Evaluate",
+  decision: "Choose",
 };
+
+export const SEARCH_STAGE_LABELS = FUNNEL_STAGE_LABELS;
 
 export type FunnelTargets = Record<FunnelStage, number>;
 
@@ -54,6 +56,24 @@ export const DEFAULT_FUNNEL_TARGETS: FunnelTargets = {
   consideration: 15,
   decision: 5,
 };
+
+export type PromptWorkbookProfile = {
+  preparedBy: string;
+  primaryCommercialJob: string;
+  targetRegions: string[];
+  trackingSurfaces: string[];
+  competitorContext: string[];
+  entityRiskRows: string[];
+};
+
+export const DEFAULT_TRACKING_SURFACES = [
+  "ChatGPT",
+  "Google AI Overviews / AI Mode",
+  "Perplexity",
+  "Gemini",
+  "Copilot",
+  "Claude",
+];
 
 export type PromptStrategy = {
   canonicalBrand: string;
@@ -68,6 +88,7 @@ export type PromptStrategy = {
   pathwaysPerPersona: number;
   targetPromptCount: number;
   funnelTargets: FunnelTargets;
+  workbook?: PromptWorkbookProfile;
 };
 
 export type PromptPersona = { slug: string; name: string };
@@ -103,9 +124,22 @@ export const EMPTY_PROMPT_STRATEGY: PromptStrategy = {
   pathwaysPerPersona: 3,
   targetPromptCount: 50,
   funnelTargets: { ...DEFAULT_FUNNEL_TARGETS },
+  workbook: {
+    preparedBy: "829 Studios",
+    primaryCommercialJob:
+      "Earn recommendation visibility among priority buyers before the brand is named.",
+    targetRegions: ["US"],
+    trackingSurfaces: [...DEFAULT_TRACKING_SURFACES],
+    competitorContext: [],
+    entityRiskRows: [],
+  },
 };
 
-export function defaultPromptStrategy(brand: string, description = ""): PromptStrategy {
+export function defaultPromptStrategy(
+  brand: string,
+  description = "",
+  primaryMarket = "US",
+): PromptStrategy {
   const fallbackCategory = description
     .replace(/[.!?]+$/g, "")
     .split(/\b(?:that helps|designed for|helping|built for)\b/i)[0]!
@@ -125,11 +159,48 @@ export function defaultPromptStrategy(brand: string, description = ""): PromptSt
     freshnessFacts: [],
     pathwaysPerPersona: 3,
     funnelTargets: { ...DEFAULT_FUNNEL_TARGETS },
+    workbook: {
+      preparedBy: "829 Studios",
+      primaryCommercialJob:
+        "Earn recommendation visibility among priority buyers before the brand is named.",
+      targetRegions: [primaryMarket],
+      trackingSurfaces: [...DEFAULT_TRACKING_SURFACES],
+      competitorContext: [],
+      entityRiskRows: [],
+    },
+  };
+}
+
+export function resolvePromptWorkbookProfile(
+  strategy: PromptStrategy,
+  primaryMarket = "US",
+): PromptWorkbookProfile {
+  return {
+    preparedBy: strategy.workbook?.preparedBy?.trim() || "829 Studios",
+    primaryCommercialJob:
+      strategy.workbook?.primaryCommercialJob?.trim() ||
+      "Earn recommendation visibility among priority buyers before the brand is named.",
+    targetRegions: strategy.workbook?.targetRegions?.length
+      ? strategy.workbook.targetRegions
+      : [primaryMarket],
+    trackingSurfaces: strategy.workbook?.trackingSurfaces?.length
+      ? strategy.workbook.trackingSurfaces
+      : [...DEFAULT_TRACKING_SURFACES],
+    competitorContext: strategy.workbook?.competitorContext ?? [],
+    entityRiskRows: strategy.workbook?.entityRiskRows ?? [],
   };
 }
 
 export function strategyPromptCount(strategy: PromptStrategy) {
   return FUNNEL_STAGES.reduce((total, stage) => total + strategy.funnelTargets[stage], 0);
+}
+
+export function deriveSearchStageTargets(targetPromptCount: number): FunnelTargets {
+  const total = Math.max(12, Math.min(100, Math.round(targetPromptCount)));
+  const decision = Math.max(2, Math.round(total * 0.1));
+  const consideration = Math.max(decision, Math.round(total * 0.3));
+  const awareness = total - decision - consideration;
+  return { awareness, consideration, decision };
 }
 
 export function strategyReadiness(strategy: PromptStrategy) {
@@ -138,19 +209,19 @@ export function strategyReadiness(strategy: PromptStrategy) {
   if (!strategy.categoryTerms.length) blockers.push("Add at least one category term.");
   if (!strategy.businessLines.length) blockers.push("Add at least one business line.");
   if (strategyPromptCount(strategy) !== strategy.targetPromptCount) {
-    blockers.push("Funnel-stage targets must add up to the prompts-per-persona target.");
+    blockers.push("The search-intent mix must add up to the prompts-per-persona target.");
   }
   if (strategy.pathwaysPerPersona < 1 || strategy.pathwaysPerPersona > 10) {
-    blockers.push("Choose between one and ten pathways per persona.");
+    blockers.push("Choose between one and ten search themes per persona.");
   }
   if (strategy.funnelTargets.decision < strategy.pathwaysPerPersona) {
-    blockers.push("Create at least one bottom-of-funnel anchor for every pathway.");
+    blockers.push("Create at least one selection query for every search theme.");
   }
   if (strategy.funnelTargets.consideration < strategy.funnelTargets.decision) {
-    blockers.push("Middle-of-funnel prompts must equal or exceed bottom-of-funnel anchors.");
+    blockers.push("Evaluation queries must equal or exceed selection queries.");
   }
   if (strategy.funnelTargets.awareness < strategy.funnelTargets.consideration) {
-    blockers.push("Top-of-funnel prompts must equal or exceed middle-of-funnel prompts.");
+    blockers.push("Exploration queries must equal or exceed evaluation queries.");
   }
   return { ready: blockers.length === 0, blockers };
 }
@@ -158,21 +229,26 @@ export function strategyReadiness(strategy: PromptStrategy) {
 function promptTypeFor(
   strategy: PromptStrategy,
   topic: TopicClass,
-  topicIndex: number,
-  funnelStage: FunnelStage,
+  topicOccurrence: number,
 ): PromptType {
-  if (funnelStage === "awareness") return "unbranded";
-  if (topic === "competitive_comparison" && strategy.competitors.length) {
-    return "competitor_comparative";
-  }
-  if (funnelStage === "consideration") return "unbranded";
   if (topic === "brand_entity_authority") {
     const canDisambiguate = Boolean(
       strategy.parentCompany || strategy.aliases.length || strategy.entityCollisions.length,
     );
-    return canDisambiguate && topicIndex % 2 === 0 ? "entity_disambiguation" : "branded";
+    return canDisambiguate && topicOccurrence % 5 === 0 ? "entity_disambiguation" : "branded";
   }
-  return "branded";
+  if (topic === "competitive_comparison") {
+    return strategy.competitors.length && topicOccurrence % 2 === 0
+      ? "competitor_comparative"
+      : "unbranded";
+  }
+  if (topic === "product_line_use_cases") {
+    return topicOccurrence % 5 === 0 ? "branded" : "unbranded";
+  }
+  if (topic === "reputation_risk") {
+    return topicOccurrence % 3 === 0 ? "branded" : "unbranded";
+  }
+  return "unbranded";
 }
 
 function geoCategoryFor(topic: TopicClass, topicIndex: number): GeoCategory {
@@ -212,7 +288,10 @@ export function buildCoverageBlueprint(
       for (let stageIndex = 0; stageIndex < count; stageIndex++) {
         const localSequence = personaCells.length;
         const topicClass = stageTopics[stageIndex % stageTopics.length]!;
-        const promptType = promptTypeFor(strategy, topicClass, stageIndex, funnelStage);
+        const topicOccurrence = personaCells.filter(
+          (cell) => cell.topicClass === topicClass,
+        ).length;
+        const promptType = promptTypeFor(strategy, topicClass, topicOccurrence);
         const parent = parentForStage(personaCells, funnelStage, stageIndex);
         const pathwayIndex =
           parent?.pathwayKey != null
@@ -230,7 +309,7 @@ export function buildCoverageBlueprint(
           questionArchetype: QUESTION_ARCHETYPES[localSequence % QUESTION_ARCHETYPES.length]!,
           funnelStage,
           pathwayKey,
-          pathwayLabel: `${businessLine} decision pathway`,
+          pathwayLabel: `${businessLine} search theme`,
           parentKey: parent?.key ?? null,
           geoCategory: geoCategoryFor(topicClass, stageIndex),
           businessLine,
@@ -241,7 +320,7 @@ export function buildCoverageBlueprint(
               : "",
           competitor:
             promptType === "competitor_comparative"
-              ? strategy.competitors[stageIndex % strategy.competitors.length]!
+              ? strategy.competitors[topicOccurrence % strategy.competitors.length]!
               : "",
         };
         cells.push(cell);
@@ -282,6 +361,13 @@ function topicsForStage(stage: FunnelStage, hasCompetitors: boolean): TopicClass
       "unbranded_category_discovery",
     ];
   }
-  return ["buyer_education", "unbranded_category_discovery", "product_line_use_cases"];
+  return [
+    "buyer_education",
+    "unbranded_category_discovery",
+    "product_line_use_cases",
+    "reputation_risk",
+    hasCompetitors ? "competitive_comparison" : "unbranded_category_discovery",
+    "brand_entity_authority",
+  ];
 }
 import type { GeoCategory } from "./studio";

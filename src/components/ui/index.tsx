@@ -105,18 +105,27 @@ export function ButtonLink({
   size = "md",
   className,
   children,
+  download,
 }: {
   href: string;
   variant?: ButtonVariant;
   size?: ButtonSize;
   className?: string;
   children: ReactNode;
+  download?: string | boolean;
 }) {
+  const linkClassName = cn(BUTTON_BASE, BUTTON_SIZES[size], BUTTON_VARIANTS[variant], className);
+
+  if (download) {
+    return (
+      <a href={href} download={download} className={linkClassName}>
+        {children}
+      </a>
+    );
+  }
+
   return (
-    <Link
-      href={href}
-      className={cn(BUTTON_BASE, BUTTON_SIZES[size], BUTTON_VARIANTS[variant], className)}
-    >
+    <Link href={href} className={linkClassName}>
       {children}
     </Link>
   );

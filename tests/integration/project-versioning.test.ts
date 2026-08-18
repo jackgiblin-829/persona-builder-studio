@@ -20,8 +20,10 @@ import type { ProjectContext } from "@/lib/auth/context";
 import { runSeed } from "@/seed/run";
 import { getProject, listProjectsForSession } from "@/services/projects";
 import { buildPromptBaselineCsv, editPromptText, tryPromoteDraftVersion } from "@/services/prompts";
+import { buildPromptTaxonomyWorkbook } from "@/services/prompt-taxonomy-workbook";
 import { createSourceFromTranscript } from "@/services/sources";
 import { savePersonaVersion, startPersonaGeneration } from "@/services/studio";
+import { resolvePersonaPresentationProfile } from "@/contracts/studio";
 
 const editor: ProjectContext = {
   userId: "usr_analyst",
@@ -98,12 +100,20 @@ describe("clean project schema and tenant boundaries", () => {
 
     await expect(buildPromptBaselineCsv(viewer)).rejects.toThrow(/demo-mode/i);
     const csv = await buildPromptBaselineCsv(viewer, { allowMock: true });
-    expect(csv.startsWith('\uFEFF"Baseline ID","Baseline Version","Persona","Pathway"')).toBe(true);
+    expect(csv.startsWith('\uFEFF"Baseline ID","Baseline Version","Persona","Search Theme"')).toBe(
+      true,
+    );
     expect(csv.trim().split("\r\n")).toHaveLength(151);
     expect(csv).toContain('"US","en-US"');
     expect(csv).toContain('"mock"');
-    expect(csv).toContain('"BOFU"');
-    expect(csv).toContain('"Parent Prompt ID"');
+    expect(csv).toContain('"Choose"');
+    expect(csv).toContain('"Related Prompt ID"');
+
+    const taxonomy = await buildPromptTaxonomyWorkbook(viewer, { allowMock: true });
+    expect(taxonomy.buffer.subarray(0, 2).toString("utf8")).toBe("PK");
+    expect(taxonomy.plan.prompts).toHaveLength(150);
+    expect(taxonomy.plan.topics.length).toBeGreaterThanOrEqual(6);
+    expect(taxonomy.plan.quality.phaseOneCount).toBeGreaterThanOrEqual(40);
   });
 });
 
@@ -194,12 +204,21 @@ describe("persona versioning and prompt refresh", () => {
 
     const list = (items: { text: string }[]) => items.map((item) => item.text);
     const profile = current!.profile;
+    const deckProfile = resolvePersonaPresentationProfile(profile);
     const input = {
       personaId: before!.id,
       expectedVersion: current!.version,
       name: current!.name,
       description: current!.description,
       summary: `${profile.summary} Edited in the integration test.`,
+      deckRole: deckProfile.role.text,
+      deckIndustry: deckProfile.industry.text,
+      deckExpertiseLevel: deckProfile.expertiseLevel.text,
+      deckTone: deckProfile.tone.text,
+      deckPovLens: deckProfile.povLens.text,
+      deckCaresAbout: list(deckProfile.caresAbout),
+      deckNeverSay: list(deckProfile.neverSay),
+      deckContentBestSuitedFor: list(deckProfile.contentBestSuitedFor),
       roles: list(profile.firmographics.roles),
       seniority: list(profile.firmographics.seniority),
       departments: list(profile.firmographics.departments),

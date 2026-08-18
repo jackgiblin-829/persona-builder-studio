@@ -325,9 +325,9 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
       researchBriefId,
     });
     const titles = [
-      "Workflow automation decision pathway",
-      "Security governance workflows decision pathway",
-      "Operational reporting decision pathway",
+      "Workflow automation search theme",
+      "Security governance workflows search theme",
+      "Operational reporting search theme",
     ];
     const plans: Array<{
       key: string;
@@ -378,14 +378,14 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
           "security governance workflows",
           "operational reporting",
         ][clusterIndex]!,
-        informationNeed: `${name} moves from bottom-of-funnel selection through evaluation and awareness for ${title.replace(" decision pathway", "")}.`,
+        informationNeed: `${name} searches for discovery, comparison, trust, and selection guidance about ${title.replace(" search theme", "")}.`,
         rationale:
-          "This Query Funnel pathway starts with a conversion-adjacent anchor and projects upward.",
+          "This theme groups distinct, evidence-backed searches around one product or buyer need.",
         signalIds: signalIds.slice(0, 4),
       });
       for (let promptIndex = 0; promptIndex < clusterPlans.length; promptIndex++) {
         const plan = clusterPlans[promptIndex]!;
-        const businessLine = title.replace(" decision pathway", "");
+        const businessLine = title.replace(" search theme", "");
         const angle = [
           "security requirements",
           "implementation effort",
@@ -481,7 +481,7 @@ export async function runSeed({ fresh = true }: { fresh?: boolean } = {}) {
             "Deterministic demo prompt grounded in the seeded persona and research signals.",
           researchFactIds: ["fact-001", "fact-004", "fact-008"],
           maximumSimilarity: 0.42,
-          reviewStatus: "ready",
+          reviewStatus: "approved",
           expectedAnswerElements: ["Direct guidance", "Tradeoffs", "Evidence", "Next steps"],
           signalIds: signalIds.slice(0, 3),
         });
@@ -508,6 +508,37 @@ function seededProfile(name: string, ids: string[]): PersonaProfile {
   });
   return {
     summary: `${name} uses search and AI answers to make, validate, and defend a consequential enterprise decision.`,
+    presentation: {
+      role: insight(name),
+      industry: insight("Enterprise Software / Workflow Operations"),
+      expertiseLevel: insight("Advanced Practitioner", 11),
+      tone: insight(
+        "Measured, direct, and evidence-led. Prefers concrete tradeoffs over broad category claims.",
+        7,
+      ),
+      povLens: insight(
+        `${name} evaluates every option through stakeholder fit, implementation effort, proof quality, and avoidable risk.`,
+        3,
+      ),
+      caresAbout: [
+        insight("A clear fit for the operating environment", 3),
+        insight("Credible proof that can withstand stakeholder review", 4),
+        insight("Implementation requirements that are specific and realistic", 2),
+        insight("Measurable improvement after the decision", 6),
+      ],
+      neverSay: [
+        insight("“Just trust the platform” without transparent evidence", 4),
+        insight("“Implementation will be effortless” without requirements", 2),
+        insight("“Every organization gets the same result” without context", 1),
+      ],
+      contentBestSuitedFor: [
+        insight("Evidence-led comparison pages, implementation guides, and decision content.", 8),
+        insight(
+          "Best paired with evaluation-stage pillar content and conversion pages that make fit, effort, and risk explicit.",
+          9,
+        ),
+      ],
+    },
     demographics: {
       age: [],
       gender: [],
