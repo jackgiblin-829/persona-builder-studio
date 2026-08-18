@@ -13,7 +13,7 @@ export async function GET(
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${ctx.projectSlug}-${demo ? "demo-" : ""}query-funnel-baseline.csv"`,
+      "Content-Disposition": `attachment; filename="${ctx.projectSlug}-${demo ? "demo-" : ""}prompt-taxonomy-baseline.csv"`,
       "Cache-Control": "private, no-store",
     },
   });

@@ -600,6 +600,16 @@ function toProfile(persona: PersonaGeneration["personas"][number]): PersonaProfi
     }));
   return {
     summary: persona.summary,
+    presentation: {
+      role: insight([persona.deck_profile.role])[0]!,
+      industry: insight([persona.deck_profile.industry])[0]!,
+      expertiseLevel: insight([persona.deck_profile.expertise_level])[0]!,
+      tone: insight([persona.deck_profile.tone])[0]!,
+      povLens: insight([persona.deck_profile.pov_lens])[0]!,
+      caresAbout: insight(persona.deck_profile.cares_about),
+      neverSay: insight(persona.deck_profile.never_say),
+      contentBestSuitedFor: insight(persona.deck_profile.content_best_suited_for),
+    },
     demographics: {
       age: distribution(persona.demographics.age),
       gender: distribution(persona.demographics.gender),

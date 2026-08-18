@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   // This repo sits inside a workspace with other lockfiles; pin the root so
   // Next does not infer the parent directory.
   outputFileTracingRoot: __dirname,
-  serverExternalPackages: ["postgres", "mammoth"],
+  serverExternalPackages: ["postgres", "mammoth", "pptxgenjs", "exceljs"],
   experimental: { serverActions: { bodySizeLimit: "30mb" } },
   eslint: { ignoreDuringBuilds: false },
   typescript: { ignoreBuildErrors: false },

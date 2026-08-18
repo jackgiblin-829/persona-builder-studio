@@ -3,7 +3,11 @@
 import { savePersonaAction } from "@/app/actions/projects";
 import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { Field, Input, Textarea } from "@/components/ui";
-import type { PersonaInsight, PersonaProfile } from "@/contracts/studio";
+import {
+  resolvePersonaPresentationProfile,
+  type PersonaInsight,
+  type PersonaProfile,
+} from "@/contracts/studio";
 
 const lines = (items: PersonaInsight[]) => items.map((item) => item.text).join("\n");
 
@@ -24,6 +28,7 @@ export function PersonaEditor({
   profile: PersonaProfile;
   csrfToken: string;
 }) {
+  const deckProfile = resolvePersonaPresentationProfile(profile);
   const fields: { name: string; label: string; items: PersonaInsight[] }[] = [
     { name: "roles", label: "Roles", items: profile.firmographics.roles },
     { name: "seniority", label: "Seniority", items: profile.firmographics.seniority },
@@ -56,6 +61,118 @@ export function PersonaEditor({
       csrfToken={csrfToken}
       hidden={{ projectId, personaId, expectedVersion: version }}
     >
+      <section className="space-y-4 rounded-lg border border-accent/30 bg-accent-soft p-4">
+        <div>
+          <h3 className="text-sm font-semibold text-ink">Client deck profile</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">
+            These fields map directly to the two presentation slides exported for this persona. Keep
+            the language polished, specific, and ready to show a client.
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Title / role" htmlFor="deckRole" required>
+            <Input
+              id="deckRole"
+              name="deckRole"
+              defaultValue={deckProfile.role.text}
+              required
+              maxLength={160}
+            />
+          </Field>
+          <Field label="Industry" htmlFor="deckIndustry" required>
+            <Input
+              id="deckIndustry"
+              name="deckIndustry"
+              defaultValue={deckProfile.industry.text}
+              required
+              maxLength={180}
+            />
+          </Field>
+          <Field label="Expertise level" htmlFor="deckExpertiseLevel" required>
+            <Input
+              id="deckExpertiseLevel"
+              name="deckExpertiseLevel"
+              defaultValue={deckProfile.expertiseLevel.text}
+              required
+              maxLength={100}
+            />
+          </Field>
+        </div>
+        <Field
+          label="Tone"
+          htmlFor="deckTone"
+          required
+          hint="Describe how content should sound for this audience."
+        >
+          <Textarea
+            id="deckTone"
+            name="deckTone"
+            defaultValue={deckProfile.tone.text}
+            required
+            rows={3}
+            maxLength={420}
+          />
+        </Field>
+        <Field
+          label="POV / lens"
+          htmlFor="deckPovLens"
+          required
+          hint="Explain how this persona evaluates the category and makes decisions."
+        >
+          <Textarea
+            id="deckPovLens"
+            name="deckPovLens"
+            defaultValue={deckProfile.povLens.text}
+            required
+            rows={4}
+            maxLength={900}
+          />
+        </Field>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Field
+            label="What they care about"
+            htmlFor="deckCaresAbout"
+            required
+            hint="Three to five concise, client-facing points; one per line."
+          >
+            <Textarea
+              id="deckCaresAbout"
+              name="deckCaresAbout"
+              defaultValue={lines(deckProfile.caresAbout)}
+              required
+              rows={8}
+            />
+          </Field>
+          <Field
+            label="What they would never say"
+            htmlFor="deckNeverSay"
+            required
+            hint="Three to four phrases or framing choices to avoid; one per line."
+          >
+            <Textarea
+              id="deckNeverSay"
+              name="deckNeverSay"
+              defaultValue={lines(deckProfile.neverSay)}
+              required
+              rows={8}
+            />
+          </Field>
+          <Field
+            label="Content best suited for"
+            htmlFor="deckContentBestSuitedFor"
+            required
+            hint="Two to three recommendations or paragraphs; one per line."
+          >
+            <Textarea
+              id="deckContentBestSuitedFor"
+              name="deckContentBestSuitedFor"
+              defaultValue={lines(deckProfile.contentBestSuitedFor)}
+              required
+              rows={8}
+            />
+          </Field>
+        </div>
+      </section>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Descriptive name" htmlFor="name" required>
           <Input id="name" name="name" defaultValue={name} required minLength={5} maxLength={100} />

@@ -196,6 +196,10 @@ describe("persona, research, and prompt quality contracts", () => {
       expect(persona.name.split(" ").length).toBeGreaterThan(2);
       expect(persona.jobs_to_be_done.length).toBeGreaterThan(0);
       expect(persona.ai_prompt_topics.length).toBeGreaterThan(0);
+      expect(persona.deck_profile.role.text.length).toBeGreaterThan(1);
+      expect(persona.deck_profile.cares_about).toHaveLength(4);
+      expect(persona.deck_profile.never_say.length).toBeGreaterThanOrEqual(3);
+      expect(persona.deck_profile.content_best_suited_for.length).toBeGreaterThanOrEqual(2);
     }
   });
 
@@ -261,6 +265,13 @@ describe("persona, research, and prompt quality contracts", () => {
       45,
     );
     expect(projectBlueprint.filter((cell) => cell.funnelStage === "awareness")).toHaveLength(90);
+    expect(
+      projectBlueprint.filter((cell) => cell.promptType === "unbranded").length /
+        projectBlueprint.length,
+    ).toBeCloseTo(0.68, 2);
+    expect(
+      projectBlueprint.filter((cell) => cell.promptType === "competitor_comparative"),
+    ).toHaveLength(15);
     expect(() => validateFunnelHierarchy(projectBlueprint)).not.toThrow();
     for (const persona of promptPersonas) {
       const personaCells = projectBlueprint.filter((cell) => cell.personaSlug === persona.slug);

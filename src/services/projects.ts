@@ -15,7 +15,7 @@ import {
   promptSets,
   researchSignals,
 } from "@/db/schema";
-import { defaultPromptStrategy } from "@/contracts/prompt-strategy";
+import { defaultPromptStrategy, deriveSearchStageTargets } from "@/contracts/prompt-strategy";
 import type { PromptStrategy } from "@/contracts/prompt-strategy";
 import { requireCapability, type ProjectContext, type ScopeContext } from "@/lib/auth/context";
 import { NotFoundError, ValidationError } from "@/lib/errors";
@@ -66,62 +66,61 @@ const strategyLineList = z
     "Keep each line under 200 characters.",
   );
 
-export const promptStrategyInputSchema = z
-  .object({
-    canonicalBrand: z.string().trim().min(2).max(160),
-    parentCompany: z.string().trim().max(160),
-    aliases: strategyLineList,
-    entityCollisions: strategyLineList,
-    categoryTerms: strategyLineList.refine((items) => items.length > 0, "Add a category term."),
-    businessLines: strategyLineList.refine((items) => items.length > 0, "Add a business line."),
-    competitors: strategyLineList,
-    buyerQualifiers: strategyLineList,
-    freshnessFacts: strategyLineList,
-    pathwaysPerPersona: z.coerce.number().int().min(1).max(10),
-    awarenessTarget: z.coerce.number().int().min(0).max(100),
-    considerationTarget: z.coerce.number().int().min(0).max(100),
-    decisionTarget: z.coerce.number().int().min(0).max(100),
-  })
-  .superRefine((input, ctx) => {
-    const total = input.awarenessTarget + input.considerationTarget + input.decisionTarget;
-    if (total < 12 || total > 100) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["awarenessTarget"],
-        message: "Generate between 12 and 100 prompts per persona.",
-      });
-    }
-    if (input.decisionTarget < input.pathwaysPerPersona) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["decisionTarget"],
-        message: "Create at least one bottom-of-funnel anchor for every pathway.",
-      });
-    }
-    if (input.considerationTarget < input.decisionTarget) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["considerationTarget"],
-        message: "Middle-of-funnel prompts must equal or exceed bottom-of-funnel anchors.",
-      });
-    }
-    if (input.awarenessTarget < input.considerationTarget) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["awarenessTarget"],
-        message: "Top-of-funnel prompts must equal or exceed middle-of-funnel prompts.",
-      });
-    }
-  });
+const workbookLineList = z
+  .string()
+  .max(20_000)
+  .transform((value) =>
+    [
+      ...new Set(
+        value
+          .split(/\n+/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    ].slice(0, 40),
+  )
+  .refine(
+    (items) => items.every((item) => item.length <= 600),
+    "Keep each planning line under 600 characters.",
+  );
+
+export const promptStrategyInputSchema = z.object({
+  canonicalBrand: z.string().trim().min(2).max(160),
+  parentCompany: z.string().trim().max(160),
+  aliases: strategyLineList,
+  entityCollisions: strategyLineList,
+  categoryTerms: strategyLineList.refine((items) => items.length > 0, "Add a category term."),
+  businessLines: strategyLineList.refine((items) => items.length > 0, "Add a business line."),
+  competitors: strategyLineList,
+  buyerQualifiers: strategyLineList,
+  freshnessFacts: strategyLineList,
+  preparedBy: z.string().trim().min(2).max(160),
+  primaryCommercialJob: z.string().trim().min(12).max(800),
+  targetRegions: strategyLineList.refine((items) => items.length > 0, "Add a target region."),
+  trackingSurfaces: strategyLineList.refine((items) => items.length > 0, "Add a tracking surface."),
+  competitorContext: workbookLineList.refine(
+    (items) => items.every((item) => item.split("|").length >= 3),
+    "Use Competitor | Business line | Why track | Phase.",
+  ),
+  entityRiskRows: workbookLineList.refine(
+    (items) => items.every((item) => item.split("|").length >= 4),
+    "Use Issue | Severity | Why it distorts results | Recommended action.",
+  ),
+  targetPromptCount: z.coerce
+    .number()
+    .int()
+    .min(12, "Generate at least 12 prompts per persona.")
+    .max(100, "Generate no more than 100 prompts per persona."),
+});
 
 export type PromptStrategyInput = z.infer<typeof promptStrategyInputSchema>;
 
 function strategyFromInput(input: PromptStrategyInput): PromptStrategy {
-  const funnelTargets = {
-    awareness: input.awarenessTarget,
-    consideration: input.considerationTarget,
-    decision: input.decisionTarget,
-  };
+  const funnelTargets = deriveSearchStageTargets(input.targetPromptCount);
+  const pathwaysPerPersona = Math.min(
+    funnelTargets.decision,
+    Math.max(1, Math.min(3, input.businessLines.length)),
+  );
   return {
     canonicalBrand: input.canonicalBrand,
     parentCompany: input.parentCompany,
@@ -132,9 +131,17 @@ function strategyFromInput(input: PromptStrategyInput): PromptStrategy {
     competitors: input.competitors,
     buyerQualifiers: input.buyerQualifiers,
     freshnessFacts: input.freshnessFacts,
-    pathwaysPerPersona: input.pathwaysPerPersona,
-    targetPromptCount: Object.values(funnelTargets).reduce((sum, count) => sum + count, 0),
+    pathwaysPerPersona,
+    targetPromptCount: input.targetPromptCount,
     funnelTargets,
+    workbook: {
+      preparedBy: input.preparedBy,
+      primaryCommercialJob: input.primaryCommercialJob,
+      targetRegions: input.targetRegions,
+      trackingSurfaces: input.trackingSurfaces,
+      competitorContext: input.competitorContext,
+      entityRiskRows: input.entityRiskRows,
+    },
   };
 }
 
@@ -173,7 +180,7 @@ export async function createProject(ctx: ScopeContext, input: ProjectInput) {
       primaryMarket: input.primaryMarket,
       languageLocale: input.languageLocale,
       sparktoroAudienceDescription: proposeAudienceDescription(input),
-      promptStrategy: defaultPromptStrategy(input.name, input.description),
+      promptStrategy: defaultPromptStrategy(input.name, input.description, input.primaryMarket),
       createdByUserId: ctx.userId,
     })
     .returning();

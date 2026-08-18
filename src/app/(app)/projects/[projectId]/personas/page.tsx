@@ -13,7 +13,11 @@ import {
   PageHeader,
   StatusBadge,
 } from "@/components/ui";
-import type { AudienceDistribution, PersonaInsight } from "@/contracts/studio";
+import {
+  resolvePersonaPresentationProfile,
+  type AudienceDistribution,
+  type PersonaInsight,
+} from "@/contracts/studio";
 import { hasCapability, requireProjectAccess } from "@/lib/auth/context";
 import { getCsrfToken } from "@/lib/auth/session";
 import { listActivePersonas } from "@/services/personas";
@@ -31,6 +35,7 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
   ]);
   const latest = summary.runs.find((run) => run.workflowType === "persona_generation") ?? null;
   const canEdit = hasCapability(ctx, "persona:edit");
+  const canExport = hasCapability(ctx, "export:read");
   return (
     <>
       <PageHeader
@@ -55,9 +60,20 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
               </ActionForm>
             ) : null}
             {items.length ? (
-              <ButtonLink href={`/projects/${projectId}/prompts`} variant="primary">
-                Build Query Funnels
-              </ButtonLink>
+              <>
+                {canExport ? (
+                  <ButtonLink
+                    href={`/projects/${projectId}/personas/export.pptx`}
+                    variant="secondary"
+                    download
+                  >
+                    Export client deck
+                  </ButtonLink>
+                ) : null}
+                <ButtonLink href={`/projects/${projectId}/prompts`} variant="primary">
+                  Create Prompt Taxonomy
+                </ButtonLink>
+              </>
             ) : null}
           </div>
         }
@@ -117,6 +133,7 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
         <div className="space-y-5">
           {items.map(({ persona, version }) => {
             const profile = version.profile;
+            const deckProfile = resolvePersonaPresentationProfile(profile);
             return (
               <Card key={persona.id}>
                 <CardHeader
@@ -131,6 +148,30 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
                 />
                 <div className="space-y-6 p-5">
                   <p className="text-sm leading-6 text-ink">{profile.summary}</p>
+                  <details className="rounded-lg border border-accent/30 bg-accent-soft" open>
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+                      Client deck profile
+                    </summary>
+                    <div className="space-y-4 border-t border-accent/20 bg-surface p-4">
+                      <dl className="grid gap-3 md:grid-cols-3">
+                        <DeckField label="Title / role" value={deckProfile.role.text} />
+                        <DeckField label="Industry" value={deckProfile.industry.text} />
+                        <DeckField
+                          label="Expertise level"
+                          value={deckProfile.expertiseLevel.text}
+                        />
+                        <DeckField label="Tone" value={deckProfile.tone.text} wide />
+                        <DeckField label="POV / lens" value={deckProfile.povLens.text} wide />
+                      </dl>
+                      <SectionGrid
+                        sections={[
+                          ["What they care about", deckProfile.caresAbout],
+                          ["What they would never say", deckProfile.neverSay],
+                          ["Content best suited for", deckProfile.contentBestSuitedFor],
+                        ]}
+                      />
+                    </div>
+                  </details>
                   <SectionGrid
                     sections={[
                       ["Jobs to be done", profile.jobsToBeDone],
@@ -217,6 +258,23 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
         </div>
       )}
     </>
+  );
+}
+
+function DeckField({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={wide ? "md:col-span-3" : undefined}>
+      <dt className="text-2xs font-bold uppercase text-ink-muted">{label}</dt>
+      <dd className="mt-1 text-sm leading-6 text-ink">{value}</dd>
+    </div>
   );
 }
 

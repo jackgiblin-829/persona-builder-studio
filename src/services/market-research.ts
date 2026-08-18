@@ -99,7 +99,7 @@ export async function startMarketResearch(ctx: ProjectContext) {
 }
 
 /**
- * Builds the grounding snapshot required by Query Funnels and freezes it in the
+ * Builds the grounding snapshot required by prompt-taxonomy generation and freezes it in the
  * same user action. The snapshot is derived from active personas, SparkToro
  * signals, and uploaded brand evidence; it does not run a second web-research
  * workflow.
@@ -133,6 +133,7 @@ export async function buildAndApprovePersonaGroundingBrief(ctx: ProjectContext) 
 
 export async function approveMarketResearchBrief(ctx: ProjectContext, briefId: string) {
   requireCapability(ctx, "project:write");
+  const project = await getProject(ctx);
   const [brief] = await db
     .select()
     .from(marketResearchBriefs)
@@ -164,7 +165,10 @@ export async function approveMarketResearchBrief(ctx: ProjectContext, briefId: s
     await tx
       .update(projects)
       .set({
-        promptStrategy: brief.content.strategy,
+        promptStrategy: {
+          ...brief.content.strategy,
+          workbook: project.promptStrategy.workbook,
+        },
         promptStrategyEdited: false,
         updatedAt: new Date(),
       })

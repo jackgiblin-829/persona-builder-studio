@@ -24,7 +24,7 @@ export const VENDOR_LABELS: Record<Vendor, string> = {
   storage: "Object storage",
 };
 export const VENDOR_ROLES: Record<Vendor, string> = {
-  openai: "Research-signal extraction, persona synthesis and Query Funnel generation",
+  openai: "Research-signal extraction, persona synthesis and realistic-search prompt generation",
   sparktoro: "Aggregated demographics, firmographics, channels, keywords and AI topics",
   storage: "Uploaded source files",
 };

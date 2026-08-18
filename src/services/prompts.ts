@@ -118,9 +118,9 @@ export function quoteCsv(value: string) {
   return `"${protectSpreadsheetFormula(value).replaceAll('"', '""')}"`;
 }
 
-export async function buildPromptBaselineCsv(
+export async function loadPromptBaselineExportData(
   ctx: ProjectContext,
-  options: { allowMock?: boolean } = {},
+  options: { allowMock?: boolean; allowDraft?: boolean } = {},
 ) {
   requireCapability(ctx, "export:read");
   const [project] = await db
@@ -129,14 +129,16 @@ export async function buildPromptBaselineCsv(
     .where(and(eq(projects.id, ctx.projectId), eq(projects.organizationId, ctx.organizationId)))
     .limit(1);
   if (!project) throw new ValidationError("Project was not found.");
-  const sets = await listLatestPromptSets(ctx);
+  const draftSets = options.allowDraft ? await listLatestPromptDraftSets(ctx) : [];
+  const isDraft = draftSets.length > 0;
+  const sets = isDraft ? draftSets : await listLatestPromptSets(ctx);
   const containsMock = sets.some((set) => set.version.dataOrigin === "mock");
   if (containsMock && !options.allowMock) {
     throw new ValidationError(
       "Production baseline export is unavailable because the active baseline contains demo-mode prompts.",
     );
   }
-  if (!containsMock) {
+  if (!containsMock && !isDraft) {
     for (const set of sets) {
       const prompts = set.clusters.flatMap((cluster) => cluster.prompts);
       const expected = set.version.strategySnapshot.targetPromptCount;
@@ -150,23 +152,31 @@ export async function buildPromptBaselineCsv(
       );
       if (blocked.length) {
         throw new ValidationError(
-          `${blocked.length} prompts for ${set.persona.name} still need a passing score and human approval.`,
+          `${blocked.length} prompts for ${set.persona.name} still need a passing quality score.`,
         );
       }
       if (new Set(prompts.map((prompt) => prompt.coverageKey)).size !== expected) {
-        throw new ValidationError(`${set.persona.name} is missing one or more Query Funnel cells.`);
+        throw new ValidationError(`${set.persona.name} is missing one or more search intents.`);
       }
     }
   }
+  return { project, sets, containsMock, isDraft };
+}
+
+export async function buildPromptBaselineCsv(
+  ctx: ProjectContext,
+  options: { allowMock?: boolean } = {},
+) {
+  const { project, sets, containsMock } = await loadPromptBaselineExportData(ctx, options);
   const rows = [
     [
       "Baseline ID",
       "Baseline Version",
       "Persona",
-      "Pathway",
+      "Search Theme",
       "Prompt ID",
-      "Parent Prompt ID",
-      "Funnel Stage",
+      "Related Prompt ID",
+      "Search Intent",
       "Intent",
       "Prompt",
       "Brand Mode",
@@ -196,7 +206,7 @@ export async function buildPromptBaselineCsv(
           cluster.title,
           prompt.coverageKey,
           prompt.parentCoverageKey ?? "",
-          funnelStageLabel(prompt.journeyStage),
+          searchStageLabel(prompt.journeyStage),
           prompt.intent,
           prompt.promptText,
           prompt.promptType,
@@ -229,8 +239,8 @@ export async function buildPromptBaselineCsv(
   return `\uFEFF${rows.map((row) => row.map(quoteCsv).join(",")).join("\r\n")}\r\n`;
 }
 
-function funnelStageLabel(value: string) {
-  return value === "decision" ? "BOFU" : value === "consideration" ? "MOFU" : "TOFU";
+function searchStageLabel(value: string) {
+  return value === "decision" ? "Choose" : value === "consideration" ? "Evaluate" : "Explore";
 }
 
 export async function setPromptReviewStatus(

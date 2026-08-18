@@ -87,6 +87,55 @@ registerMockGenerator(PERSONA_GENERATION.id, (context) => {
         .replace(/^-|-$/g, ""),
       description,
       summary: `${description} This persona uses search and AI answers to narrow choices, validate claims, and prepare a defensible next step.`,
+      deck_profile: {
+        role: insight(
+          index === 0
+            ? "Enterprise Risk and Governance Evaluator"
+            : index === 1
+              ? "Operational Improvement Buyer"
+              : "Strategic Recommendation Champion",
+        ),
+        industry: insight("Enterprise Software / Workflow Operations"),
+        expertise_level: insight(index === 1 ? "Practitioner" : "Advanced Practitioner"),
+        tone: insight(
+          index === 0
+            ? "Measured, precise, and risk-aware. Responds to transparent evidence and clear boundaries."
+            : index === 1
+              ? "Practical, direct, and outcome-oriented. Prefers plain language over category jargon."
+              : "Analytical, credible, and persuasive. Needs language that can travel across stakeholders.",
+        ),
+        pov_lens: insight(
+          index === 0
+            ? "Filters every option through security, governance, and enterprise fit before building consensus."
+            : index === 1
+              ? "Evaluates solutions by the effort required to produce measurable operating improvement."
+              : "Compares approaches through the quality of proof and the strength of the recommendation they enable.",
+        ),
+        cares_about: [
+          insight("A clear fit for the real operating environment", "decision_criterion"),
+          insight("Credible proof that can withstand stakeholder review", "proof_need"),
+          insight("Implementation requirements that are concrete and realistic", "constraint"),
+          insight("A decision path that reduces avoidable effort and risk", "job_to_be_done"),
+        ],
+        never_say: [
+          insight("“Just trust the platform” without transparent evidence", "objection"),
+          insight(
+            "“Implementation will be effortless” without specific requirements",
+            "constraint",
+          ),
+          insight("“Every organization gets the same result” without context", "proof_need"),
+        ],
+        content_best_suited_for: [
+          insight(
+            "Evidence-led comparison pages, implementation guides, and proof-rich decision content.",
+            "content_preference",
+          ),
+          insight(
+            "Best paired with evaluation-stage pillar content and conversion pages that make fit, effort, and risk explicit.",
+            "content_preference",
+          ),
+        ],
+      },
       demographics: {
         age: [distribution(index === 0 ? "35–44" : index === 1 ? "25–34" : "45–54", 34)],
         gender: [distribution("Audience distribution available in SparkToro", 100)],
@@ -277,7 +326,7 @@ registerMockGenerator(PROMPT_PLANNING.id, (context) => {
   return {
     persona_slug: personaSlug,
     plan_summary:
-      "A bottom-up Query Funnel that connects evidence-backed awareness needs to evaluation questions and final purchase decisions.",
+      "A search-intent taxonomy grounded in the persona's questions, proof needs, comparisons, and product use cases.",
     cells: blueprint.map((cell) => {
       const signalId = safeSignalIds[cell.sequence % Math.max(1, safeSignalIds.length)];
       const factId = factIds[cell.sequence % Math.max(1, factIds.length)];
@@ -298,17 +347,15 @@ registerMockGenerator(PROMPT_PLANNING.id, (context) => {
         information_need: `${cell.signalTracked} for ${cell.businessLine}`,
         stage_objective:
           cell.funnelStage === "decision"
-            ? `Support a final ${cell.businessLine} selection.`
+            ? `Capture a realistic ${cell.businessLine} selection search.`
             : cell.funnelStage === "consideration"
-              ? `Evaluate what is required before the assigned ${cell.businessLine} decision.`
-              : `Explain an earlier ${cell.businessLine} problem that leads to evaluation.`,
+              ? `Capture a realistic ${cell.businessLine} comparison or fit search.`
+              : `Capture a realistic ${cell.businessLine} discovery or education search.`,
         required_concepts: [cell.businessLine, cell.signalTracked],
         permitted_entities: permittedEntities.filter((value): value is string => Boolean(value)),
         signal_ids: signalId ? [signalId] : [],
         research_fact_ids: factId ? [factId] : [],
-        parent_reason: cell.parentKey
-          ? `This information need prepares the buyer for ${cell.parentKey}.`
-          : "This is a conversion-adjacent decision anchor.",
+        parent_reason: "This intent adds distinct, evidence-backed search coverage.",
         evidence_status: hasPromptEvidence(signalId ? [signalId] : [], factId ? [factId] : [])
           ? "supported"
           : "insufficient_evidence",
@@ -341,7 +388,6 @@ const promptCandidateGenerator: MockGenerator = (context) => {
   const signalIds = signals.map((signal) => signal.id);
   const safeIds = signalIds.length ? signalIds : ["mock-signal"];
   const factIds = ((context.factIds as string[] | undefined) ?? ["fact-001"]).filter(Boolean);
-  const personaNames = (context.personaNames as Record<string, string> | undefined) ?? {};
   const category = strategy.categoryTerms[0] ?? "workflow software";
   const collision =
     strategy.entityCollisions[0] ??
@@ -349,119 +395,85 @@ const promptCandidateGenerator: MockGenerator = (context) => {
     strategy.aliases[0] ??
     "the parent brand";
 
+  const searchFocus = (cell: CoverageCell) =>
+    [
+      "easy implementation",
+      "strict security needs",
+      "lower operating costs",
+      "proven results",
+      "stakeholder adoption",
+      "existing integrations",
+      "lower vendor risk",
+      "change management",
+      "faster time to value",
+      "better reporting",
+      "strong governance",
+      "reliable support",
+      "growing teams",
+      "cleaner data",
+      "procurement approval",
+      "lean teams",
+      "long-term flexibility",
+    ][cell.sequence % 17]!;
+
   const unbrandedPrompt = (cell: CoverageCell) => {
-    const qualifier = cell.buyerQualifier ? ` ${cell.buyerQualifier}` : "";
-    const persona = personaNames[cell.personaSlug] ?? "buyer";
-    const angle = {
-      brand_entity_authority: "checking brand facts",
-      unbranded_category_discovery: "building a category shortlist",
-      competitive_comparison: "comparing named vendors",
-      buyer_education: "learning the category basics",
-      reputation_risk: "checking trust and risk",
-      product_line_use_cases: "matching the product to a use case",
-    }[cell.topicClass];
-    const variants = [
-      `What are the best ${cell.businessLine} options for${qualifier || ` a ${persona.toLowerCase()}`} while ${angle}?`,
-      `Which ${category} platforms handle ${cell.businessLine} well for${qualifier || " growing teams"} while ${angle}?`,
-      `How do I choose a ${cell.businessLine} provider for${qualifier || ` a ${persona.toLowerCase()}`} while ${angle}?`,
-      `Is ${cell.businessLine} worth paying for if I am${qualifier || " comparing software for my team"} and ${angle}?`,
-      `What features matter most in ${category} for ${cell.businessLine}${qualifier} when ${angle}?`,
-      `Can ${cell.businessLine} simplify the process for${qualifier || " a growing organization"} while ${angle}?`,
-      `What does a reliable ${cell.businessLine} solution usually cost${qualifier} when ${angle}?`,
-      `Where should I start when evaluating ${category} for ${cell.businessLine}${qualifier} and ${angle}?`,
-      `Are there ${cell.businessLine} tools designed for${qualifier || ` a ${persona.toLowerCase()}`} that help with ${angle}?`,
-      `Which providers are trusted for ${cell.businessLine}${qualifier} when ${angle}?`,
-      `What risks should I check before adopting ${cell.businessLine}${qualifier} while ${angle}?`,
-      `How can I tell whether a ${cell.businessLine} platform is credible${qualifier} when ${angle}?`,
-    ];
-    return variants[cell.sequence % variants.length]!;
+    const focus = searchFocus(cell);
+    const variants: Record<CoverageCell["questionArchetype"], string> = {
+      recommendation: `What are the best ${cell.businessLine} options for ${focus}?`,
+      comparison: `Which ${cell.businessLine} tools are easiest to compare for ${focus}?`,
+      how_to: `How does ${cell.businessLine} work with ${focus}?`,
+      worth_it: `Is ${cell.businessLine} worth it for ${focus}?`,
+      migration: `How hard is it to switch ${cell.businessLine} providers with ${focus}?`,
+      risk: `What are the biggest ${cell.businessLine} risks with ${focus}?`,
+      entity_verification: `Which companies specialize in ${cell.businessLine} for ${focus}?`,
+      workflow: `How can ${cell.businessLine} improve ${focus}?`,
+    };
+    return variants[cell.questionArchetype];
   };
 
   const promptFor = (cell: CoverageCell) => {
-    const qualifier = cell.buyerQualifier ? ` for ${cell.buyerQualifier}` : "";
+    const focus = searchFocus(cell);
     if (cell.promptType === "competitor_comparative") {
-      const buyer = cell.buyerQualifier || "a growing organization";
       const variants = [
-        `How does ${strategy.canonicalBrand} compare with ${cell.competitor} for ${cell.businessLine}${qualifier}?`,
-        `Which is better for ${cell.businessLine}, ${strategy.canonicalBrand} or ${cell.competitor}, for ${buyer}?`,
-        `What are the main ${cell.businessLine} tradeoffs between ${strategy.canonicalBrand} and ${cell.competitor}${qualifier}?`,
-        `Should ${buyer} choose ${strategy.canonicalBrand} or ${cell.competitor} for ${cell.businessLine}?`,
-        `Is ${strategy.canonicalBrand} easier to use than ${cell.competitor} for ${cell.businessLine}${qualifier}?`,
-        `Compare ${strategy.canonicalBrand} and ${cell.competitor} for ${cell.businessLine} in the context of ${buyer}.`,
-        `What makes ${strategy.canonicalBrand} different from ${cell.competitor} for ${cell.businessLine}${qualifier}?`,
-        `When would ${buyer} prefer ${strategy.canonicalBrand} over ${cell.competitor} for ${cell.businessLine}?`,
-        `Does ${strategy.canonicalBrand} offer an advantage over ${cell.competitor} for ${cell.businessLine}${qualifier}?`,
-        `Where does ${cell.competitor} outperform ${strategy.canonicalBrand} for ${cell.businessLine}${qualifier}?`,
+        `Is ${strategy.canonicalBrand} or ${cell.competitor} better for ${cell.businessLine} and ${focus}?`,
+        `How do ${strategy.canonicalBrand} and ${cell.competitor} compare for ${cell.businessLine} with ${focus}?`,
+        `Which has better ${cell.businessLine} support, ${strategy.canonicalBrand} or ${cell.competitor}, for ${focus}?`,
+        `What are the ${cell.businessLine} tradeoffs between ${strategy.canonicalBrand} and ${cell.competitor} for ${focus}?`,
       ];
       return variants[cell.sequence % variants.length]!;
     }
     if (cell.promptType === "entity_disambiguation") {
       const variants = [
-        `What is ${strategy.canonicalBrand}, how is it different from ${collision}, and does it provide ${cell.businessLine}?`,
-        `Is ${strategy.canonicalBrand} part of ${collision}, and what ${cell.businessLine} services does it offer?`,
-        `How can I distinguish ${strategy.canonicalBrand} from ${collision} when researching ${cell.businessLine}?`,
-        `Which company operates ${strategy.canonicalBrand}, and is ${cell.businessLine} one of its products?`,
+        `Is ${strategy.canonicalBrand} affiliated with ${collision} for ${cell.businessLine} and ${focus}?`,
+        `How is ${strategy.canonicalBrand} different from ${collision} for ${cell.businessLine} with ${focus}?`,
+        `Is ${strategy.canonicalBrand} or ${collision} the ${cell.businessLine} company for ${focus}?`,
+        `Which ${cell.businessLine} company is ${strategy.canonicalBrand}, not ${collision}, for ${focus}?`,
       ];
       return variants[Math.floor(cell.sequence / 2) % variants.length]!;
     }
     if (cell.promptType === "branded") {
-      const angle =
-        cell.topicClass === "reputation_risk"
-          ? "while evaluating trust and risk"
-          : "while verifying brand and entity facts";
       const variants = [
-        `Is ${strategy.canonicalBrand} a credible choice for ${cell.businessLine}${qualifier} ${angle}?`,
-        `What should buyers know about ${strategy.canonicalBrand} for ${cell.businessLine}${qualifier} ${angle}?`,
-        `How well does ${strategy.canonicalBrand} support ${cell.businessLine}${qualifier} ${angle}?`,
-        `Does ${strategy.canonicalBrand} have a strong reputation for ${cell.businessLine}${qualifier} ${angle}?`,
-        `Who is ${strategy.canonicalBrand} best suited for when evaluating ${cell.businessLine}${qualifier} ${angle}?`,
-        `Can ${strategy.canonicalBrand} handle ${cell.businessLine}${qualifier} ${angle}?`,
-        `What evidence supports choosing ${strategy.canonicalBrand} for ${cell.businessLine}${qualifier} ${angle}?`,
-        `Why would a buyer use ${strategy.canonicalBrand} for ${cell.businessLine}${qualifier} ${angle}?`,
+        `Is ${strategy.canonicalBrand} good for ${cell.businessLine} with ${focus}?`,
+        `What do users say about ${strategy.canonicalBrand} for ${cell.businessLine} and ${focus}?`,
+        `How well does ${strategy.canonicalBrand} handle ${cell.businessLine} with ${focus}?`,
+        `Can I trust ${strategy.canonicalBrand} for ${cell.businessLine} and ${focus}?`,
       ];
       return variants[cell.sequence % variants.length]!;
     }
     return unbrandedPrompt(cell);
   };
   const alternatePromptFor = (cell: CoverageCell) => {
-    const buyer = cell.buyerQualifier || (personaNames[cell.personaSlug] ?? "a growing team");
+    const focus = searchFocus(cell);
     if (cell.promptType === "competitor_comparative") {
-      return `For ${buyer}, when does ${strategy.canonicalBrand} make more sense than ${cell.competitor} for ${cell.businessLine}?`;
+      return `When is ${strategy.canonicalBrand} better than ${cell.competitor} for ${cell.businessLine} and ${focus}?`;
     }
     if (cell.promptType === "entity_disambiguation") {
-      return `At the ${cell.funnelStage} stage, does ${strategy.canonicalBrand} refer to the same business as ${collision}, and which one offers ${cell.businessLine}?`;
+      return `Does ${strategy.canonicalBrand}, rather than ${collision}, provide ${cell.businessLine}?`;
     }
     if (cell.promptType === "branded") {
-      return `Would ${strategy.canonicalBrand} be a strong ${cell.businessLine} option for ${buyer} when measuring ${cell.signalTracked}?`;
+      return `Should I consider ${strategy.canonicalBrand} for ${cell.businessLine} when I need ${focus}?`;
     }
-    return `For ${buyer}, what should I look for when shortlisting ${cell.businessLine} providers in ${category} to assess ${cell.signalTracked}?`;
-  };
-  const contextualize = (cell: CoverageCell, prompt: string) => {
-    const focus = [
-      "implementation effort",
-      "security requirements",
-      "total operating cost",
-      "proof of outcomes",
-      "stakeholder adoption",
-      "integration fit",
-      "vendor risk",
-      "change management",
-      "time to value",
-      "reporting needs",
-      "governance",
-      "customer support",
-      "scalability",
-      "data quality",
-      "procurement concerns",
-      "team capacity",
-      "long-term flexibility",
-    ][cell.sequence % 17]!;
-    const moment = {
-      decision: "before a final selection",
-      consideration: "while narrowing the shortlist",
-      awareness: "while first understanding the problem",
-    }[cell.funnelStage];
-    return `${prompt} Include ${focus} in the answer ${moment}.`;
+    return `What should I search for in ${category} for ${cell.businessLine} and ${focus}?`;
   };
   return {
     blueprint_summary:
@@ -470,7 +482,7 @@ const promptCandidateGenerator: MockGenerator = (context) => {
       [promptFor(cell), alternatePromptFor(cell)].map((promptText, index) => ({
         plan_key: cell.key,
         candidate_key: `${cell.key}-${index === 0 ? "a" : "b"}`,
-        prompt_text: contextualize(cell, promptText),
+        prompt_text: promptText,
         intent: `${cell.topicClass.replaceAll("_", " ")} for ${cell.businessLine}`,
         expected_answer_elements: [
           "A direct answer grounded in the named category or entity",
@@ -501,7 +513,7 @@ registerMockGenerator(PROMPT_QUALITY_EVALUATION.id, (context) => {
       distinctiveness: index % 2 === 0 ? 9 : 8,
       issues: [],
       explanation:
-        "The candidate is specific, supported, natural, stage-appropriate, and connected to its parent.",
+        "The candidate is specific, supported, natural, search-ready, and aligned to its assigned intent.",
       repair_instruction: "",
     })),
   };

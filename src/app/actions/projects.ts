@@ -85,7 +85,7 @@ export async function updatePromptStrategyAction(_previous: ActionState, formDat
     revalidatePath(`/projects/${input.projectId}/prompts`);
     return {
       status: "ok",
-      message: "Query Funnel strategy saved. Review the pathway shape before generating.",
+      message: "Prompt taxonomy settings saved.",
     };
   });
 }
@@ -187,7 +187,7 @@ export async function generatePromptsAction(_previous: ActionState, formData: Fo
     return {
       status: "ok",
       message:
-        "Query Funnels built and quality-checked. Fully passing runs are current; unresolved cells remain in a protected draft.",
+        "Prompt taxonomy created and quality-checked. Fully passing prompts are ready to download; unresolved rows remain in a protected draft.",
     };
   });
 }
@@ -261,7 +261,7 @@ export async function regeneratePromptAction(_previous: ActionState, formData: F
     return {
       status: "ok",
       message:
-        "This funnel cell and any descendants were repaired and rescored. A fully passing draft is promoted automatically.",
+        "This search prompt was repaired and rescored. A fully passing draft is promoted automatically.",
     };
   });
 }
@@ -287,7 +287,7 @@ export async function savePersonaAction(_previous: ActionState, formData: FormDa
     return {
       status: "ok",
       message:
-        "New persona version saved. Its Query Funnel baseline is refreshing automatically when one already exists.",
+        "New persona version saved. Its prompt taxonomy is refreshing automatically when one already exists.",
     };
   });
 }

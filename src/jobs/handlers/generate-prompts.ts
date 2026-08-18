@@ -3,7 +3,6 @@ import { and, desc, eq, inArray, isNull, max } from "drizzle-orm";
 import { cosineSimilarity, getOpenAIAdapter, type OpenAIAdapter } from "@/adapters/openai";
 import {
   buildCoverageBlueprint,
-  FUNNEL_STAGE_LABELS,
   strategyReadiness,
   type CoverageCell,
   type FunnelStage,
@@ -80,7 +79,7 @@ export type EvaluatedPrompt = {
   maximumSimilarity: number;
 };
 type SelectedPrompt = EvaluatedPrompt & {
-  reviewStatus: "ready" | "needs_revision";
+  reviewStatus: "approved" | "needs_revision";
 };
 
 type PromptGenerationTrace = PromptGenerationMetrics & {
@@ -173,13 +172,13 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
     if (!brief) {
       throw new AppError(
         "validation",
-        "Approve a market research brief before generating prompts.",
+        "Refresh the prompt taxonomy so its audience grounding can be prepared.",
       );
     }
     if (project.promptStrategyEdited) {
       throw new AppError(
         "validation",
-        "The prompt strategy changed after research approval. Refresh and approve the market brief.",
+        "The workbook settings changed. Refresh the prompt taxonomy to rebuild its audience grounding.",
       );
     }
     const strategy = brief.content.strategy;
@@ -248,7 +247,7 @@ registerJob(JOB_TYPES.generatePrompts, async ({ job }) => {
 
     const finalized: SelectedPrompt[] = applyLibraryFailures(selected, planned).map((prompt) => ({
       ...prompt,
-      reviewStatus: passesQuality(prompt) ? "ready" : "needs_revision",
+      reviewStatus: passesQuality(prompt) ? "approved" : "needs_revision",
     }));
     trace.finalPassCount = finalized.filter(passesQuality).length;
     await updateRun(runId, { stage: "validating", progress: 88 });
@@ -1154,7 +1153,10 @@ function deterministicFailures(
   allowedFactIds: Set<string>,
 ) {
   const failures: PromptQualityIssue[] = [];
+  const rawText = prompt.prompt_text.trim();
   const text = normalizePromptText(prompt.prompt_text);
+  const wordCount = rawText.split(/\s+/).filter(Boolean).length;
+  const questionMarkCount = (rawText.match(/\?/g) ?? []).length;
   const brandTerms = [strategy.canonicalBrand, ...strategy.aliases].filter(Boolean);
   const disambiguators = [
     strategy.parentCompany,
@@ -1179,6 +1181,19 @@ function deterministicFailures(
   }
   if (text.includes("when fit evidence risk and implementation effort all matter")) {
     failures.push(qualityIssue("boilerplate", "Banned boilerplate."));
+  }
+  if (wordCount < 4 || wordCount > 22 || questionMarkCount !== 1 || !rawText.endsWith("?")) {
+    failures.push(
+      qualityIssue("unnatural_buyer_language", "Use one natural search question of 4–22 words."),
+    );
+  }
+  if (/^(?:include|provide|write|create|generate|list|analyze|summarize)\b/i.test(rawText)) {
+    failures.push(
+      qualityIssue(
+        "unnatural_buyer_language",
+        "Write what a person would search, not an instruction to the answer engine.",
+      ),
+    );
   }
   const mentionsBrand = brandTerms.some((term) => includesTerm(text, term));
   if (cell.promptType === "unbranded" && mentionsBrand)
@@ -1258,7 +1273,7 @@ function namedEntities(cell: CoverageCell, strategy: PromptStrategy) {
 }
 
 function qualitySummary(selected: SelectedPrompt[]) {
-  const ready = selected.filter((prompt) => prompt.reviewStatus === "ready");
+  const ready = selected.filter((prompt) => prompt.reviewStatus === "approved");
   const average = selected.length
     ? selected.reduce((sum, prompt) => sum + prompt.scores.total, 0) / selected.length
     : 0;
@@ -1369,7 +1384,8 @@ async function persistPromptLibraryAtomically(
           informationNeed:
             group.cells.find((cell) => cell.funnelStage === "decision")?.informationNeed ??
             `${item.version.name} evaluates ${group.cells[0]!.businessLine}.`,
-          rationale: `This pathway starts with ${FUNNEL_STAGE_LABELS.decision.toLowerCase()} anchors and connects each evaluation and awareness need to a selected parent using the approved persona evidence.`,
+          rationale:
+            "This search theme groups distinct, evidence-backed discovery, comparison, trust, and selection questions.",
           signalIds: groupSignalIds,
         });
 
