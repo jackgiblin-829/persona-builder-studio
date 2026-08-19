@@ -20,7 +20,7 @@ test("seeded three-tab workflow and legacy 404", async ({ page }) => {
   await expect(workflow.getByRole("link", { name: /Prompt Taxonomy/ })).toBeVisible();
   await workflow.getByRole("link", { name: /Prompt Taxonomy/ }).click();
   await expect(page.getByRole("link", { name: /Download demo workbook/ }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Prompt workbook setup" })).toBeVisible();
+  await page.getByRole("heading", { name: "Prompt workbook setup" }).click();
   await expect(page.getByLabel("Prompts per persona")).toBeVisible();
   await expect(page.getByText("Query Funnels", { exact: true })).toHaveCount(0);
 

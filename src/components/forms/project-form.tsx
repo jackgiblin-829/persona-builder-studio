@@ -55,23 +55,29 @@ export function ProjectForm({
           rows={5}
         />
       </Field>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Primary market" htmlFor="primaryMarket" required>
-          <Select id="primaryMarket" name="primaryMarket" defaultValue="US">
-            <option value="US">United States</option>
-            <option value="CA">Canada</option>
-            <option value="UK">United Kingdom</option>
-          </Select>
-        </Field>
-        <Field label="Language" htmlFor="languageLocale" required>
-          <Select id="languageLocale" name="languageLocale" defaultValue="en-US">
-            <option value="en-US">English (United States)</option>
-            <option value="en-CA">English (Canada)</option>
-            <option value="fr-CA">French (Canada)</option>
-            <option value="en-GB">English (United Kingdom)</option>
-          </Select>
-        </Field>
-      </div>
+      <details className="rounded-lg border border-surface-border bg-surface-sunken">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink">
+          Market and language
+          <span className="ml-2 text-xs font-normal text-ink-muted">United States · English</span>
+        </summary>
+        <div className="grid gap-4 border-t border-surface-border bg-surface p-4 sm:grid-cols-2">
+          <Field label="Primary market" htmlFor="primaryMarket" required>
+            <Select id="primaryMarket" name="primaryMarket" defaultValue="US">
+              <option value="US">United States</option>
+              <option value="CA">Canada</option>
+              <option value="UK">United Kingdom</option>
+            </Select>
+          </Field>
+          <Field label="Language" htmlFor="languageLocale" required>
+            <Select id="languageLocale" name="languageLocale" defaultValue="en-US">
+              <option value="en-US">English (United States)</option>
+              <option value="en-CA">English (Canada)</option>
+              <option value="fr-CA">French (Canada)</option>
+              <option value="en-GB">English (United Kingdom)</option>
+            </Select>
+          </Field>
+        </div>
+      </details>
       <SubmitButton label="Create project" pendingLabel="Creating…" />
     </ActionForm>
   );

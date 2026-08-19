@@ -81,52 +81,10 @@ export function PromptStrategyForm({
           />
         </Field>
       </div>
-      <div className="grid gap-4 lg:grid-cols-4">
-        <Field label="Aliases" htmlFor="aliases" hint="One name per line.">
-          <Textarea id="aliases" name="aliases" rows={4} defaultValue={lines(strategy.aliases)} />
-        </Field>
-        <Field
-          label="Entity collisions"
-          htmlFor="entityCollisions"
-          hint="Names the model must distinguish."
-        >
-          <Textarea
-            id="entityCollisions"
-            name="entityCollisions"
-            rows={4}
-            defaultValue={lines(strategy.entityCollisions)}
-          />
-        </Field>
-        <Field
-          label="Buyer qualifiers"
-          htmlFor="buyerQualifiers"
-          hint="Stage, size, urgency, or context."
-        >
-          <Textarea
-            id="buyerQualifiers"
-            name="buyerQualifiers"
-            rows={4}
-            defaultValue={lines(strategy.buyerQualifiers)}
-          />
-        </Field>
-        <Field
-          label="Freshness checks"
-          htmlFor="freshnessFacts"
-          hint="Facts that may change over time."
-        >
-          <Textarea
-            id="freshnessFacts"
-            name="freshnessFacts"
-            rows={4}
-            defaultValue={lines(strategy.freshnessFacts)}
-          />
-        </Field>
-      </div>
-      <div className="rounded-xl border border-surface-border bg-surface-sunken p-4">
+      <div className="rounded-xl border border-surface-border p-4">
         <h3 className="text-sm font-semibold text-ink">Client workbook brief</h3>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
-          These fields drive the strategic framing, competitor configuration, entity watchlist, and
-          rollout guidance in the final prompt-taxonomy workbook.
+          Set the commercial goal, markets, and question volume for the final workbook.
         </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <Field label="Prepared by" htmlFor="preparedBy" required>
@@ -168,54 +126,7 @@ export function PromptStrategyForm({
             />
           </Field>
         </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <Field
-            label="Tracking surfaces"
-            htmlFor="trackingSurfaces"
-            hint="One answer engine per line."
-            required
-          >
-            <Textarea
-              id="trackingSurfaces"
-              name="trackingSurfaces"
-              rows={7}
-              defaultValue={lines(workbookProfile.trackingSurfaces)}
-              required
-            />
-          </Field>
-          <Field
-            label="Competitor tracking context"
-            htmlFor="competitorContext"
-            hint="Competitor | Business line | Why track | Phase"
-          >
-            <Textarea
-              id="competitorContext"
-              name="competitorContext"
-              rows={7}
-              defaultValue={lines(workbookProfile.competitorContext)}
-            />
-          </Field>
-          <Field
-            label="Entity watchlist"
-            htmlFor="entityRiskRows"
-            hint="Issue | Severity | Why it distorts results | Recommended action"
-          >
-            <Textarea
-              id="entityRiskRows"
-              name="entityRiskRows"
-              rows={7}
-              defaultValue={lines(workbookProfile.entityRiskRows)}
-            />
-          </Field>
-        </div>
-      </div>
-      <div className="rounded-xl border border-surface-border p-4">
-        <h3 className="mb-1 text-sm font-semibold text-ink">Search-question volume</h3>
-        <p className="mb-3 max-w-3xl text-xs leading-5 text-ink-muted">
-          Choose the number of realistic questions to create for each persona. The studio balances
-          discovery, comparison, selection, brand, competitor, and risk searches automatically.
-        </p>
-        <div className="max-w-xs">
+        <div className="mt-4 max-w-xs">
           <Field label="Prompts per persona" htmlFor="targetPromptCount" hint="Recommended: 40–60">
             <Input
               id="targetPromptCount"
@@ -229,6 +140,102 @@ export function PromptStrategyForm({
           </Field>
         </div>
       </div>
+      <details className="rounded-xl border border-surface-border bg-surface-sunken">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink">
+          Advanced workbook options
+          <span className="ml-2 text-xs font-normal text-ink-muted">
+            aliases, tracking, and entity checks
+          </span>
+        </summary>
+        <div className="space-y-5 border-t border-surface-border bg-surface p-4">
+          <div className="grid gap-4 lg:grid-cols-4">
+            <Field label="Aliases" htmlFor="aliases" hint="One name per line.">
+              <Textarea
+                id="aliases"
+                name="aliases"
+                rows={4}
+                defaultValue={lines(strategy.aliases)}
+              />
+            </Field>
+            <Field
+              label="Entity collisions"
+              htmlFor="entityCollisions"
+              hint="Names the model must distinguish."
+            >
+              <Textarea
+                id="entityCollisions"
+                name="entityCollisions"
+                rows={4}
+                defaultValue={lines(strategy.entityCollisions)}
+              />
+            </Field>
+            <Field
+              label="Buyer qualifiers"
+              htmlFor="buyerQualifiers"
+              hint="Stage, size, urgency, or context."
+            >
+              <Textarea
+                id="buyerQualifiers"
+                name="buyerQualifiers"
+                rows={4}
+                defaultValue={lines(strategy.buyerQualifiers)}
+              />
+            </Field>
+            <Field
+              label="Freshness checks"
+              htmlFor="freshnessFacts"
+              hint="Facts that may change over time."
+            >
+              <Textarea
+                id="freshnessFacts"
+                name="freshnessFacts"
+                rows={4}
+                defaultValue={lines(strategy.freshnessFacts)}
+              />
+            </Field>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Field
+              label="Tracking surfaces"
+              htmlFor="trackingSurfaces"
+              hint="One answer engine per line."
+              required
+            >
+              <Textarea
+                id="trackingSurfaces"
+                name="trackingSurfaces"
+                rows={7}
+                defaultValue={lines(workbookProfile.trackingSurfaces)}
+                required
+              />
+            </Field>
+            <Field
+              label="Competitor tracking context"
+              htmlFor="competitorContext"
+              hint="Competitor | Business line | Why track | Phase"
+            >
+              <Textarea
+                id="competitorContext"
+                name="competitorContext"
+                rows={7}
+                defaultValue={lines(workbookProfile.competitorContext)}
+              />
+            </Field>
+            <Field
+              label="Entity watchlist"
+              htmlFor="entityRiskRows"
+              hint="Issue | Severity | Why it distorts results | Recommended action"
+            >
+              <Textarea
+                id="entityRiskRows"
+                name="entityRiskRows"
+                rows={7}
+                defaultValue={lines(workbookProfile.entityRiskRows)}
+              />
+            </Field>
+          </div>
+        </div>
+      </details>
       <SubmitButton label="Save workbook settings" pendingLabel="Saving…" />
     </ActionForm>
   );

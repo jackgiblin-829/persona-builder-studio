@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { AppShell, globalNav } from "@/components/app-shell";
 import { ProjectForm } from "@/components/forms/project-form";
 import { Card, PageHeader } from "@/components/ui";
@@ -14,16 +15,11 @@ export default async function NewProjectPage() {
   const csrfToken = await getCsrfToken();
   const pathname = (await headers()).get("x-pathname") ?? "/projects/new";
   return (
-    <AppShell
-      session={session}
-      organizationId={first.organizationId}
-      nav={globalNav(first.organizationId)}
-      currentPath={pathname}
-    >
+    <AppShell nav={globalNav(first.organizationId)} currentPath={pathname}>
       <PageHeader
         title="New project"
-        description="Five fields define the research boundary. You can refine the proposed SparkToro audience after creation."
-        breadcrumb="Projects / New"
+        description="Add the basics now. You can refine the audience before building personas."
+        breadcrumb={<Link href="/projects">Projects</Link>}
       />
       <Card className="p-5">
         <ProjectForm

@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { SignInForm } from "@/components/forms/sign-in-form";
-import { Callout } from "@/components/ui";
 import { getCsrfToken, getSession } from "@/lib/auth/session";
 import { env } from "@/lib/env";
 
@@ -26,8 +25,11 @@ export default async function SignInPage() {
       </div>
 
       {!env.isProduction ? (
-        <div className="mt-4">
-          <Callout tone="info" title="Seeded demo accounts">
+        <details className="mt-4 rounded-lg border border-surface-border bg-surface">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink">
+            Demo credentials
+          </summary>
+          <div className="border-t border-surface-border px-4 py-3 text-sm text-ink-muted">
             <p>
               <code className="font-mono text-xs">admin@example.com</code> /{" "}
               <code className="font-mono text-xs">demo-password-1</code> — owner
@@ -39,8 +41,8 @@ export default async function SignInPage() {
             <p className="mt-1 text-xs">
               Run <code className="font-mono">npm run db:setup</code> if these do not work yet.
             </p>
-          </Callout>
-        </div>
+          </div>
+        </details>
       ) : null}
 
       <p className="mt-6 text-xs text-ink-subtle">

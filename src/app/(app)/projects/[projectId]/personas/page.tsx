@@ -1,17 +1,12 @@
-import { generatePersonasAction } from "@/app/actions/projects";
-import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { PersonaEditor } from "@/components/forms/persona-editor";
 import {
-  Badge,
   ButtonLink,
   Callout,
   Card,
   CardHeader,
   ConfidenceBar,
   EmptyState,
-  MetricStrip,
   PageHeader,
-  StatusBadge,
 } from "@/components/ui";
 import {
   resolvePersonaPresentationProfile,
@@ -44,21 +39,6 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
         breadcrumb={`${summary.project.name} / Personas`}
         actions={
           <div className="flex flex-wrap gap-2">
-            {canEdit ? (
-              <ActionForm
-                action={generatePersonasAction}
-                csrfToken={csrfToken}
-                hidden={{ projectId }}
-                className="space-y-0"
-              >
-                <SubmitButton
-                  label={items.length ? "Refresh personas" : "Build personas"}
-                  pendingLabel="Building personas…"
-                  disabled={summary.sources.length === 0}
-                  variant="secondary"
-                />
-              </ActionForm>
-            ) : null}
             {items.length ? (
               <>
                 {canExport ? (
@@ -71,7 +51,7 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
                   </ButtonLink>
                 ) : null}
                 <ButtonLink href={`/projects/${projectId}/prompts`} variant="primary">
-                  Create Prompt Taxonomy
+                  Continue to prompts
                 </ButtonLink>
               </>
             ) : null}
@@ -108,15 +88,6 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
           </Callout>
         </div>
       ) : null}
-      <MetricStrip
-        className="mb-5"
-        metrics={[
-          { label: "Active personas", value: items.length },
-          { label: "Source revision", value: summary.project.sourceRevision },
-          { label: "Persona revision", value: summary.project.activePersonaRevision },
-          { label: "Latest run", value: latest ? <StatusBadge status={latest.status} /> : "—" },
-        ]}
-      />
       {!items.length ? (
         <Card>
           <EmptyState
@@ -137,17 +108,11 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
             return (
               <Card key={persona.id}>
                 <CardHeader
-                  title={
-                    <span className="flex flex-wrap items-center gap-2">
-                      {version.name}
-                      <Badge tone="accent">v{version.version}</Badge>
-                    </span>
-                  }
+                  title={version.name}
                   description={version.description}
                   actions={<ConfidenceBar value={version.overallConfidence} />}
                 />
-                <div className="space-y-6 p-5">
-                  <p className="text-sm leading-6 text-ink">{profile.summary}</p>
+                <div className="space-y-4 p-5">
                   <details className="rounded-lg border border-accent/30 bg-accent-soft" open>
                     <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
                       Client deck profile
@@ -172,18 +137,26 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
                       />
                     </div>
                   </details>
-                  <SectionGrid
-                    sections={[
-                      ["Jobs to be done", profile.jobsToBeDone],
-                      ["Goals", profile.goals],
-                      ["Pain points", profile.painPoints],
-                      ["Decision criteria", profile.decisionCriteria],
-                      ["Common questions", profile.commonQuestions],
-                      ["Proof needs", profile.proofNeeds],
-                      ["Vocabulary", profile.vocabulary],
-                      ["AI prompt topics", profile.aiPromptTopics],
-                    ]}
-                  />
+                  <details className="rounded-lg border border-surface-border bg-surface-sunken">
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
+                      Research insights
+                    </summary>
+                    <div className="border-t border-surface-border bg-surface p-4">
+                      <p className="mb-4 text-sm leading-6 text-ink">{profile.summary}</p>
+                      <SectionGrid
+                        sections={[
+                          ["Jobs to be done", profile.jobsToBeDone],
+                          ["Goals", profile.goals],
+                          ["Pain points", profile.painPoints],
+                          ["Decision criteria", profile.decisionCriteria],
+                          ["Common questions", profile.commonQuestions],
+                          ["Proof needs", profile.proofNeeds],
+                          ["Vocabulary", profile.vocabulary],
+                          ["AI prompt topics", profile.aiPromptTopics],
+                        ]}
+                      />
+                    </div>
+                  </details>
                   <details className="rounded-lg border border-surface-border bg-surface-sunken">
                     <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-ink">
                       SparkToro audience behavior and demographics
@@ -230,6 +203,7 @@ export default async function PersonasPage({ params }: { params: Promise<{ proje
                           ["Buying triggers", profile.buyingTriggers],
                           ["Keywords", profile.keywords],
                         ]}
+                        showEvidence
                       />
                     </div>
                   </details>
@@ -301,7 +275,13 @@ function Distribution({ title, rows }: { title: string; rows: AudienceDistributi
   );
 }
 
-function SectionGrid({ sections }: { sections: [string, PersonaInsight[]][] }) {
+function SectionGrid({
+  sections,
+  showEvidence = false,
+}: {
+  sections: [string, PersonaInsight[]][];
+  showEvidence?: boolean;
+}) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       {sections.map(([title, items]) => (
@@ -312,9 +292,11 @@ function SectionGrid({ sections }: { sections: [string, PersonaInsight[]][] }) {
               items.map((item, index) => (
                 <li key={`${item.text}-${index}`} className="text-sm text-ink">
                   <span>{item.text}</span>
-                  <span className="ml-2 whitespace-nowrap text-2xs text-ink-subtle">
-                    {item.signalIds.length} refs · {Math.round(item.confidence * 100)}%
-                  </span>
+                  {showEvidence ? (
+                    <span className="ml-2 whitespace-nowrap text-2xs text-ink-subtle">
+                      {item.signalIds.length} refs · {Math.round(item.confidence * 100)}%
+                    </span>
+                  ) : null}
                 </li>
               ))
             ) : (

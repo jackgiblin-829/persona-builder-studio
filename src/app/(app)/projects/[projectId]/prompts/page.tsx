@@ -6,15 +6,13 @@ import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { PromptStrategyForm } from "@/components/forms/prompt-strategy-form";
 import {
   Badge,
-  Button,
+  BrandIcon,
   ButtonLink,
   Callout,
   Card,
   CardHeader,
   EmptyState,
-  MetricStrip,
   PageHeader,
-  StatusBadge,
 } from "@/components/ui";
 import { SEARCH_STAGE_LABELS, strategyReadiness } from "@/contracts/prompt-strategy";
 import { hasCapability, requireProjectAccess } from "@/lib/auth/context";
@@ -94,15 +92,7 @@ export default async function PromptsPage({ params }: { params: Promise<{ projec
               <ButtonLink href={draftExportHref} variant="secondary" download>
                 Download draft workbook
               </ButtonLink>
-            ) : (
-              <Button
-                variant="secondary"
-                disabled
-                title="Create the prompt taxonomy to enable the workbook download."
-              >
-                Download workbook
-              </Button>
-            )}
+            ) : null}
             {canGenerate ? (
               <ActionForm
                 action={generatePromptsAction}
@@ -113,7 +103,7 @@ export default async function PromptsPage({ params }: { params: Promise<{ projec
                 <SubmitButton
                   label={
                     sets.length
-                      ? "Refresh prompt taxonomy"
+                      ? "Regenerate taxonomy"
                       : openAiMode === "mock"
                         ? "Create demo prompt taxonomy"
                         : "Create prompt taxonomy"
@@ -164,62 +154,40 @@ export default async function PromptsPage({ params }: { params: Promise<{ projec
         </div>
       ) : null}
 
-      <MetricStrip
-        className="mb-5"
-        metrics={[
-          { label: "Personas", value: activePersonas.length },
-          { label: "Search questions", value: totalPrompts },
-          { label: "Unbranded", value: totalPrompts ? `${unbrandedShare}%` : "—" },
-          { label: "Approved", value: approvedCount },
-          {
-            label: "Needs work",
-            value: needsRevisionCount + draftNeedsRevision,
-            tone: needsRevisionCount + draftNeedsRevision ? "warn" : "success",
-          },
-          { label: "Latest run", value: latest ? <StatusBadge status={latest.status} /> : "—" },
-        ]}
-      />
-
-      <Card className="mb-5">
-        <div className="grid gap-3 p-4 md:grid-cols-3">
-          {[
-            [
-              "1",
-              "Use real audience language",
-              "Ground topics in persona questions, uploaded research, category terms, and buyer vocabulary.",
-            ],
-            [
-              "2",
-              "Write realistic searches",
-              "Create concise discovery, comparison, cost, risk, brand, and selection questions a person would actually type.",
-            ],
-            [
-              "3",
-              "Package the workbook",
-              "Deduplicate, score, organize, and export the approved questions as a client-ready taxonomy.",
-            ],
-          ].map(([number, title, description]) => (
-            <div key={number} className="rounded-lg border border-surface-border p-3">
-              <p className="text-2xs font-bold uppercase tracking-wide text-accent">
-                Step {number}
-              </p>
-              <p className="mt-1 text-sm font-semibold text-ink">{title}</p>
-              <p className="mt-1 text-xs leading-5 text-ink-muted">{description}</p>
-            </div>
-          ))}
+      {sets.length ? (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-surface-border bg-surface px-4 py-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-observed-soft text-observed">
+            <BrandIcon name="check-circle" className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-ink">Workbook ready</p>
+            <p className="text-xs text-ink-muted">
+              {totalPrompts} quality-checked questions · {unbrandedShare}% unbranded ·{" "}
+              {activePersonas.length} personas
+            </p>
+          </div>
+          <Badge tone="success">approved</Badge>
         </div>
-      </Card>
+      ) : null}
 
       <Card className="mb-5">
-        <CardHeader
-          title="Prompt workbook setup"
-          description="Define the products, audiences, markets, competitors, and tracking context the exported search questions should cover."
-          actions={
-            <div className="flex flex-wrap items-center gap-2">
+        <details open={!sets.length || !readiness.ready}>
+          <summary className="cursor-pointer list-none px-4 py-4 [&::-webkit-details-marker]:hidden">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-ink">Prompt workbook setup</h2>
+                <p className="mt-0.5 text-xs text-ink-muted">
+                  Products, audiences, markets, competitors, and tracking context.
+                </p>
+              </div>
               <Badge tone={readiness.ready ? "success" : "warn"}>
                 {readiness.ready ? "ready" : "needs inputs"}
               </Badge>
-              {canEditSettings ? (
+            </div>
+          </summary>
+          <div className="border-t border-surface-border p-4">
+            {canEditSettings ? (
+              <div className="mb-4 flex justify-end">
                 <ActionForm
                   action={applyPromptStrategySuggestionsAction}
                   csrfToken={csrfToken}
@@ -233,32 +201,30 @@ export default async function PromptsPage({ params }: { params: Promise<{ projec
                     size="sm"
                   />
                 </ActionForm>
-              ) : null}
-            </div>
-          }
-        />
-        <div className="p-4">
-          {readiness.blockers.length ? (
-            <div className="mb-4">
-              <Callout tone="warn" title="Complete these inputs before creating the workbook">
-                {readiness.blockers.join(" ")}
-              </Callout>
-            </div>
-          ) : null}
-          {canEditSettings ? (
-            <PromptStrategyForm
-              projectId={projectId}
-              csrfToken={csrfToken}
-              strategy={strategy}
-              primaryMarket={summary.project.primaryMarket}
-            />
-          ) : (
-            <p className="text-sm text-ink-muted">
-              Your role can review the settings and download an approved workbook, but cannot edit
-              generation inputs.
-            </p>
-          )}
-        </div>
+              </div>
+            ) : null}
+            {readiness.blockers.length ? (
+              <div className="mb-4">
+                <Callout tone="warn" title="Complete these inputs before creating the workbook">
+                  {readiness.blockers.join(" ")}
+                </Callout>
+              </div>
+            ) : null}
+            {canEditSettings ? (
+              <PromptStrategyForm
+                projectId={projectId}
+                csrfToken={csrfToken}
+                strategy={strategy}
+                primaryMarket={summary.project.primaryMarket}
+              />
+            ) : (
+              <p className="text-sm text-ink-muted">
+                Your role can review the settings and download an approved workbook, but cannot edit
+                generation inputs.
+              </p>
+            )}
+          </div>
+        </details>
       </Card>
 
       {!activePersonas.length ? (
@@ -276,22 +242,11 @@ export default async function PromptsPage({ params }: { params: Promise<{ projec
       ) : sets.length ? (
         <Card>
           <CardHeader
-            title={exportReady ? "Prompt workbook ready" : "Latest approved search questions"}
-            description={`${totalPrompts} deduplicated questions across ${activePersonas.length} personas. The preview is intentionally brief; the workbook contains the complete taxonomy and tracking plan.`}
-            actions={
-              exportReady ? (
-                <ButtonLink href={exportHref} variant="primary" size="sm" download>
-                  {containsMock ? "Download demo workbook" : "Download workbook"}
-                </ButtonLink>
-              ) : draftRows.length ? (
-                <ButtonLink href={draftExportHref} variant="primary" size="sm" download>
-                  Download draft workbook
-                </ButtonLink>
-              ) : null
-            }
+            title="Sample questions"
+            description={`A preview of 8 of ${totalPrompts} deduplicated questions. The workbook contains the complete taxonomy and tracking plan.`}
           />
           <div className="divide-y divide-surface-border">
-            {promptRows.slice(0, 12).map((prompt) => (
+            {promptRows.slice(0, 8).map((prompt) => (
               <div
                 key={prompt.id}
                 className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between"
