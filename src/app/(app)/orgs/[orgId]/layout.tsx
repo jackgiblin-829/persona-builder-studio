@@ -18,12 +18,7 @@ export default async function OrgLayout({
   const pathname = (await headers()).get("x-pathname") ?? "";
 
   return (
-    <AppShell
-      session={session}
-      organizationId={orgId}
-      nav={globalNav(orgId)}
-      currentPath={pathname}
-    >
+    <AppShell nav={globalNav(orgId)} currentPath={pathname}>
       {children}
     </AppShell>
   );

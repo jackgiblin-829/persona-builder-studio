@@ -65,19 +65,19 @@ const BUTTON_BASE =
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "brand-button-reveal rounded-full border-2 border-ink bg-ink text-white hover:border-ink hover:bg-ink",
+    "rounded-lg border border-accent bg-accent text-white shadow-sm hover:border-accent-ink hover:bg-accent-ink",
   secondary:
-    "brand-button-reveal rounded-full border-2 border-ink bg-transparent text-ink hover:bg-ink hover:text-white",
-  danger: "rounded-full border-2 border-danger bg-danger text-white hover:border-ink hover:bg-ink",
+    "rounded-lg border border-surface-border bg-surface text-ink shadow-sm hover:border-ink hover:bg-surface-sunken",
+  danger: "rounded-lg border border-danger bg-danger text-white hover:border-ink hover:bg-ink",
   ghost:
     "rounded-none border-0 bg-transparent px-0 text-ink underline decoration-2 underline-offset-4 hover:text-accent",
 };
 
 const ICON_BUTTON_VARIANTS: Record<Exclude<ButtonVariant, "ghost">, string> = {
-  primary: "rounded-full border-2 border-ink bg-ink text-white hover:border-ink hover:bg-ink",
+  primary: "rounded-full border border-accent bg-accent text-white hover:bg-accent-ink",
   secondary:
-    "rounded-full border-2 border-ink bg-transparent text-ink hover:bg-ink hover:text-white",
-  danger: "rounded-full border-2 border-danger bg-danger text-white hover:border-ink hover:bg-ink",
+    "rounded-full border border-surface-border bg-surface text-ink hover:border-ink hover:bg-surface-sunken",
+  danger: "rounded-full border border-danger bg-danger text-white hover:border-ink hover:bg-ink",
 };
 
 const BUTTON_SIZES: Record<ButtonSize, string> = {
@@ -493,7 +493,9 @@ export function ConfidenceBar({ value }: { value: number }) {
       <span className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-sunken" aria-hidden>
         <span className={cn("block h-full rounded-full", tone)} style={{ width: `${pct}%` }} />
       </span>
-      <span className="text-xs tabular-nums text-ink-muted">{pct.toFixed(0)}</span>
+      <span className="whitespace-nowrap text-xs tabular-nums text-ink-muted">
+        {pct.toFixed(0)}% confidence
+      </span>
     </span>
   );
 }

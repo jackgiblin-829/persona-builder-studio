@@ -75,7 +75,7 @@
 
 @layer components {
   .card {
-    @apply rounded-lg border border-surface-border bg-surface shadow-[0_1px_2px_rgba(10,0,40,0.04)];
+    @apply rounded-xl border border-surface-border bg-surface shadow-[0_1px_2px_rgba(10,0,40,0.04)];
   }
 
   .label {
@@ -87,7 +87,7 @@
   }
 
   .input {
-    @apply block w-full rounded border border-neutral-8 bg-surface px-3 py-2 text-sm
+    @apply block w-full rounded-lg border border-neutral-8 bg-surface px-3 py-2.5 text-sm
       text-ink placeholder:text-ink-subtle focus:border-ink focus:outline-none
       focus:ring-0 disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-ink-subtle;
   }
@@ -106,31 +106,5 @@
     mask-repeat: no-repeat;
     -webkit-mask-size: contain;
     mask-size: contain;
-  }
-
-  .brand-button-reveal::after {
-    content: "";
-    display: inline-block;
-    width: 0;
-    height: 1.125rem;
-    margin-left: 0;
-    background-color: currentcolor;
-    -webkit-mask-image: url("/icons/829/arrow.svg");
-    mask-image: url("/icons/829/arrow.svg");
-    -webkit-mask-position: center;
-    mask-position: center;
-    -webkit-mask-repeat: no-repeat;
-    mask-repeat: no-repeat;
-    -webkit-mask-size: contain;
-    mask-size: contain;
-    transition:
-      width 0.2s linear,
-      margin-left 0.2s linear;
-  }
-
-  .brand-button-reveal:hover::after,
-  .brand-button-reveal:focus-visible::after {
-    width: 1.125rem;
-    margin-left: 0.25rem;
   }
 }

@@ -19,8 +19,6 @@ export default async function ProjectLayout({
   const pathname = (await headers()).get("x-pathname") ?? `/projects/${projectId}`;
   return (
     <AppShell
-      session={session}
-      organizationId={ctx.organizationId}
       nav={globalNav(ctx.organizationId)}
       currentPath={pathname}
       projectName={ctx.projectName}

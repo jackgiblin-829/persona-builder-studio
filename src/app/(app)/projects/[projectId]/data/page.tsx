@@ -1,13 +1,13 @@
-import Link from "next/link";
 import { generatePersonasAction, retrySourceAction } from "@/app/actions/projects";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { AudienceDescriptionForm, DataUploadForms } from "@/components/forms/data-forms";
 import {
   Badge,
+  BrandIcon,
   Callout,
   Card,
   CardHeader,
-  MetricStrip,
   PageHeader,
   StatusBadge,
 } from "@/components/ui";
@@ -28,6 +28,10 @@ export default async function ProjectDataPage({
   const [summary, csrfToken] = await Promise.all([getProjectWorkflowSummary(ctx), getCsrfToken()]);
   const latestRun = summary.runs.find((run) => run.workflowType === "persona_generation") ?? null;
   const canEdit = hasCapability(ctx, "source:upload");
+  const shouldRefresh =
+    summary.sources.some((source) => source.progress < 100 && source.status !== "failed") ||
+    latestRun?.status === "queued" ||
+    latestRun?.status === "running";
   let preflight: Awaited<ReturnType<typeof getPersonaGenerationPreflight>> | null = null;
   let preflightError: string | null = null;
   if (summary.sources.length > 0) {
@@ -39,15 +43,11 @@ export default async function ProjectDataPage({
   }
   return (
     <>
+      {shouldRefresh ? <AutoRefresh /> : null}
       <PageHeader
         title="Build personas"
         description="Add brand knowledge, define the audience in SparkToro, and let the studio do the rest."
         breadcrumb={`${summary.project.name} / Data`}
-        actions={
-          <Link href={`/projects/${projectId}/data`} className="text-sm text-ink-muted underline">
-            Refresh status
-          </Link>
-        }
       />
 
       {summary.newDataAvailable ? (
@@ -67,20 +67,36 @@ export default async function ProjectDataPage({
         </div>
       ) : null}
 
-      <MetricStrip
-        className="mb-4 lg:grid-cols-5"
-        metrics={[
-          { label: "Sources", value: summary.sources.length },
-          { label: "Ready", value: summary.completedSourceCount, tone: "success" },
-          { label: "Active personas", value: summary.activePersonas.length },
-          { label: "Market", value: summary.project.primaryMarket },
-          {
-            label: "Evidence readiness",
-            value: `${summary.brandReadiness.score}%`,
-            tone: summary.brandReadiness.score === 100 ? "success" : "warn",
-          },
-        ]}
-      />
+      <div className="mb-5 flex items-center gap-3 rounded-xl border border-surface-border bg-surface px-4 py-3">
+        <span
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+            summary.brandReadiness.score === 100
+              ? "bg-observed-soft text-observed"
+              : "bg-warn-soft text-warn"
+          }`}
+        >
+          <BrandIcon
+            name={summary.brandReadiness.score === 100 ? "check-circle" : "upload"}
+            className="h-5 w-5"
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-ink">
+            {summary.brandReadiness.score === 100 ? "Ready to build" : "Research in progress"}
+          </p>
+          <p className="text-xs text-ink-muted">
+            {summary.completedSourceCount} of {summary.sources.length} sources processed
+            {summary.activePersonas.length
+              ? ` · ${summary.activePersonas.length} current personas`
+              : ""}
+          </p>
+        </div>
+        <Badge tone={summary.brandReadiness.score === 100 ? "success" : "warn"}>
+          {summary.brandReadiness.score === 100
+            ? "ready"
+            : `${summary.brandReadiness.score}% ready`}
+        </Badge>
+      </div>
 
       {canEdit ? (
         <div className="mb-5">
@@ -160,13 +176,6 @@ export default async function ProjectDataPage({
         <CardHeader
           title="3. Build personas"
           description="One action finishes pending sources, gathers SparkToro audience behavior, and creates three to five evidence-backed personas."
-          actions={
-            preflight?.cached ? (
-              <Badge tone="success">SparkToro cache hit</Badge>
-            ) : (
-              <Badge tone="neutral">up to 41 SparkToro credits</Badge>
-            )
-          }
         />
         <div className="flex flex-wrap items-center justify-between gap-4 p-4">
           <div className="text-sm text-ink-muted">
@@ -188,7 +197,7 @@ export default async function ProjectDataPage({
               className="space-y-0"
             >
               <SubmitButton
-                label={summary.activePersonas.length ? "Refresh personas" : "Build personas"}
+                label={summary.activePersonas.length ? "Rebuild personas" : "Build personas"}
                 pendingLabel="Processing evidence and building personas…"
                 disabled={
                   summary.sources.length === 0 || Boolean(preflight && !preflight.sufficient)
